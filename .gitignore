@@ -1,0 +1,18 @@
+# Credentials and local config
+bpq_dashboard.cfg
+qrz_cache.json
+
+# Generated output
+N4SFL_Dashboard.html
+
+# SQLite database (contains personal data)
+bpq_history.db
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Windows
+Thumbs.db
+desktop.ini
