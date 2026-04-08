@@ -1238,6 +1238,9 @@ body.dark .fb{{background:#334155;border-color:#475569;color:#94a3b8}}
 .fb-part {{background:#f97316;border-color:#f97316;color:#fff}}
 .fb-gw   {{background:#8b5cf6;border-color:#8b5cf6;color:#fff}}
 #map{{height:360px;width:100%}}
+.map-wrap.expanded{{position:fixed;top:0;left:0;right:0;bottom:0;z-index:9998;margin:0;border-radius:0;display:flex;flex-direction:column}}
+.map-wrap.expanded #map{{flex:1;height:auto}}
+.map-wrap.expanded .map-tb,.map-wrap.expanded .map-leg{{flex-shrink:0}}
 .map-leg{{display:flex;gap:16px;padding:10px 16px;border-top:1px solid #f1f5f9;flex-wrap:wrap;background:#f8fafc}}
 body.dark .map-leg{{background:#0f172a;border-color:#334155}}
 .li{{display:flex;align-items:center;gap:6px;font-size:.74rem;color:#64748b}}
@@ -1375,6 +1378,7 @@ body.dark .ft{{border-color:#334155}}
     <button class="fb"           id="bb" onclick="setF('guest')">Guest BBS</button>
     <button class="fb"           id="bc" onclick="setF('partner')">Partner BBS</button>
     <button class="fb"           id="bd" onclick="setF('gw')">Gateway</button>
+    <button class="fb"           id="map-exp-btn" onclick="toggleMapExpand()" style="margin-left:auto">&#x26F6; Expand</button>
   </div>
   <div id="map"></div>
   <div class="map-leg">
@@ -1845,6 +1849,14 @@ function applyMapFilter() {{
   }});
 }}
 
+function toggleMapExpand(){{
+  const w=document.querySelector('.map-wrap');
+  const isExp=w.classList.toggle('expanded');
+  document.getElementById('map-exp-btn').innerHTML=isExp?'&#10005; Close':'&#x26F6; Expand';
+  document.body.style.overflow=isExp?'hidden':'';
+  setTimeout(()=>map.invalidateSize(),200);
+}}
+
 function setF(f){{
   document.getElementById('ba').className='fb'+(f==='all'?     ' fa':'');
   document.getElementById('bb').className='fb'+(f==='guest'?   ' fb-guest':'');
@@ -1913,6 +1925,26 @@ document.addEventListener('keydown', e => {{
 // Apply newest-first sort on Activity by Day, then apply Today filter
 sortDaily(document.querySelector('#daily-table th.sort[data-col="0"]'));
 applyPreset('today');
+
+// ── Auto-reload when dashboard server detects new log data ───────────────────
+(function(){{
+  let knownTs=0;
+  async function poll(){{
+    try{{
+      const r=await fetch('/api/last-refresh');
+      if(!r.ok) return;
+      const d=await r.json();
+      if(knownTs&&d.ts>knownTs) location.reload(true);
+      knownTs=d.ts;
+      const h=document.querySelector('.rfx-hint');
+      if(h) h.innerHTML='Auto-refresh active &mdash; watching logs every {CHECK_INTERVAL}s';
+    }}catch(e){{
+      // Server not reachable (file opened directly) — silently ignore
+    }}
+  }}
+  poll();
+  setInterval(poll,15000);
+}})();
 </script>
 </body></html>"""
 
