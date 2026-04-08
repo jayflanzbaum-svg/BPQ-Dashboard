@@ -1937,7 +1937,7 @@ applyPreset('today');
       if(knownTs&&d.ts>knownTs) location.reload(true);
       knownTs=d.ts;
       const h=document.querySelector('.rfx-hint');
-      if(h) h.innerHTML='Auto-refresh active &mdash; watching logs every {CHECK_INTERVAL}s';
+      if(h) h.innerHTML='Auto-refresh active &mdash; watching logs';
     }}catch(e){{
       // Server not reachable (file opened directly) — silently ignore
     }}
