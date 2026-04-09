@@ -2464,7 +2464,7 @@ def main():
     with open(args.out, "w", encoding="utf-8") as f:
         f.write(html)
 
-    print(f"\n✅  {os.path.abspath(args.out)}")
+    print(f"\nDone: {os.path.abspath(args.out)}")
     print(f"    CMS polls:    {s.cms_polls}")
     print(f"    Inbound:      {s.inbound_total}")
     print(f"    GW users:     {len(s.gateway_users)}")
