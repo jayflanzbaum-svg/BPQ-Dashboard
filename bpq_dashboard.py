@@ -1931,10 +1931,10 @@ applyPreset('today');
   let knownTs=0;
   async function poll(){{
     try{{
-      const r=await fetch('/api/last-refresh');
+      const r=await fetch('/api/last-refresh?_='+Date.now());
       if(!r.ok) return;
       const d=await r.json();
-      if(knownTs&&d.ts>knownTs) location.reload(true);
+      if(knownTs&&d.ts>knownTs) location.reload();
       knownTs=d.ts;
       const h=document.querySelector('.rfx-hint');
       if(h) h.innerHTML='Auto-refresh active &mdash; watching logs';
