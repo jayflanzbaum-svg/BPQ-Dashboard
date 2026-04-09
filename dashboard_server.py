@@ -60,7 +60,7 @@ def _watcher(log_dir):
                         _last_refresh_ts = time.time()
                         print(f"  Dashboard refreshed at {time.strftime('%H:%M:%S')}")
                     else:
-                        print(f"  Refresh failed: {r.stderr[:200]}")
+                        print(f"  Refresh failed: {r.stderr[:500]}")
                 except Exception as e:
                     print(f"  Refresh error: {e}")
             elif now_mtime > last_mtime:

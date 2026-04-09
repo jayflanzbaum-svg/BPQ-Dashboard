@@ -2305,8 +2305,8 @@ def main():
     parser.add_argument("--no-qrz",   action="store_true", help="Skip QRZ, use grids only")
     args = parser.parse_args()
 
-    # Offer to save credentials on first use
-    if args.qrz_user and args.qrz_pass and not os.path.exists(cfg_path):
+    # Offer to save credentials on first use (skip when running non-interactively)
+    if args.qrz_user and args.qrz_pass and not os.path.exists(cfg_path) and sys.stdin.isatty():
         save = input(f"\nSave QRZ credentials to {cfg_path}? [y/N] ").strip().lower()
         if save == "y":
             cfg = configparser.ConfigParser()
@@ -2319,7 +2319,7 @@ def main():
 
     # BPQ32 web token — prompt interactively if not in config
     bpq_token = getattr(args, "bpq_token", "") or cfg_token
-    if not bpq_token:
+    if not bpq_token and sys.stdin.isatty():
         print("\nBPQ32 web interface token not configured.")
         print("  Open http://127.0.0.1:8010/Mail/Users in your browser.")
         print("  Copy the part after the '?' in the URL (e.g. M000061557FE0)")
