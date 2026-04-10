@@ -751,7 +751,8 @@ def build_html(s: Stats, geo: dict, days: int, email_overrides: dict = None) -> 
         else:
             geo[call] = geo.get(call) or {}
             geo[call]["email"] = em
-    now   = datetime.now().strftime("%Y-%m-%d %H:%M")
+    _now  = datetime.now()
+    now   = f"{_now.strftime('%Y-%m-%d')} {_now.strftime('%I:%M %p').lstrip('0')}"
     dr    = s.date_range
     dlabel = (f"{fmt_date(dr[0])} \u2013 {fmt_date(dr[1])}, 20{dr[1][:2]}"
               if dr != (None, None) else "All available data")
@@ -2341,7 +2342,7 @@ def main():
         print(f"ERROR: Log directory not found: {args.logdir}")
         sys.exit(1)
 
-    print(f"\nScanning logs: {args.logdir}  (last {args.days} day(s))")
+    print(f"\nScanning logs: {args.logdir}  ({'all files' if args.days == 0 else f'last {args.days} day(s)'})")
     files = find_logs(args.logdir, args.days)
     for k, v in files.items():
         print(f"  {k:10s}: {len(v)} file(s)")
@@ -2471,11 +2472,11 @@ def main():
     print(f"    BBS callers:  {len(s.bbs_callers)}")
     print(f"    Crashes:      {max(0,s.crashes-1)}")
     print(f"    Map stations: {resolved+1}")
-    print(f"\n── Gateway users & dates ───────────────────────────")
+    print(f"\n-- Gateway users & dates ---------------------------")
     for call, gv in sorted(s.gateway_users.items()):
         dates = sorted(s.station_dates.get(call, set()))
         print(f"  {call:12s}  sessions={gv['sessions']}  dates={dates}")
-    print(f"\n── BBS callers ─────────────────────────────────────")
+    print(f"\n-- BBS callers -------------------------------------")
     for call, cv in sorted(s.bbs_callers.items()):
         base  = strip_ssid(call)
         role  = "Partner" if base in s.inbound_b2_calls else "Guest"
