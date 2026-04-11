@@ -741,9 +741,17 @@ def _station_type(base: str, s: Stats) -> str:
     return "gw"
 
 
-def build_html(s: Stats, geo: dict, days: int, email_overrides: dict = None) -> str:
+def build_html(s: Stats, geo: dict, days: int, email_overrides: dict = None,
+               node_stats: dict = None, node_ports: list = None,
+               node_users: list = None) -> str:
     if email_overrides is None:
         email_overrides = {}
+    if node_stats is None:
+        node_stats = {}
+    if node_ports is None:
+        node_ports = []
+    if node_users is None:
+        node_users = []
     # Merge email overrides into geo — override takes precedence over QRZ
     for call, em in email_overrides.items():
         if call in geo and geo[call]:
@@ -1098,6 +1106,49 @@ def build_html(s: Stats, geo: dict, days: int, email_overrides: dict = None) -> 
     crash_col  = "#f85149" if n_crashes else "#22c55e"
     crash_dates_json = _json.dumps([cd["iso"] for cd in s.crash_dates if not cd.get("startup")])
 
+    # -- Build node status bar HTML --
+    ns = node_stats
+    _node_bar = ""
+    if ns.get("ok"):
+        buf_pct = (ns["buffers_cur"] / ns["buffers_max"] * 100) if ns["buffers_max"] else 0
+        buf_color = "green" if buf_pct > 50 else ("amber" if buf_pct > 20 else "red")
+        _port_chips = ""
+        for p in node_ports:
+            _port_chips += f'<span class="nb-port">{p["port"]} {p["driver"]}</span> '
+        _active = len(node_users)
+        _active_label = f"{_active} station{'s' if _active != 1 else ''}" if _active else "None"
+        _node_bar = (
+            '<div class="node-bar">'
+            f'<div class="nb-item"><span class="nb-dot nb-dot-green"></span>'
+            f'<span class="nb-label">Node</span><span class="nb-val">Online</span></div>'
+            f'<div class="nb-sep"></div>'
+            f'<div class="nb-item"><span class="nb-label">Uptime</span>'
+            f'<span class="nb-val">{ns["uptime"]}</span></div>'
+            f'<div class="nb-sep"></div>'
+            f'<div class="nb-item"><span class="nb-label">Buffers</span>'
+            f'<span class="nb-val"><span class="nb-dot nb-dot-{buf_color}" '
+            f'style="margin-right:3px"></span>{ns["buffers_cur"]}/{ns["buffers_max"]}</span></div>'
+            f'<div class="nb-sep"></div>'
+            f'<div class="nb-item"><span class="nb-label">Nodes</span>'
+            f'<span class="nb-val">{ns["known_nodes"]}</span></div>'
+            f'<div class="nb-sep"></div>'
+            f'<div class="nb-item"><span class="nb-label">Active</span>'
+            f'<span class="nb-val">{_active_label}</span></div>'
+            f'<div class="nb-sep"></div>'
+            f'<div class="nb-item"><span class="nb-label">Ports</span>{_port_chips}</div>'
+            f'<div class="nb-sep"></div>'
+            f'<div class="nb-item"><span class="nb-label">Version</span>'
+            f'<span class="nb-val" style="font-size:.78rem">{ns["version"]}</span></div>'
+            '</div>'
+        )
+    elif not ns.get("ok") and node_stats:
+        _node_bar = (
+            '<div class="node-bar">'
+            '<div class="nb-item"><span class="nb-dot nb-dot-red"></span>'
+            '<span class="nb-label">Node</span><span class="nb-val">Unreachable</span></div>'
+            '</div>'
+        )
+
     return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -1133,6 +1184,18 @@ body.dark .hdr-sub .mono{{color:#2dd4bf}}
 body.dark .tog{{background:#1e293b;border-color:#334155;color:#94a3b8}}
 
 /* ── KPI cards ── */
+/* -- node status bar -- */
+.node-bar{{display:flex;flex-wrap:wrap;gap:12px;align-items:center;margin-bottom:18px;padding:14px 18px;background:#fff;border:1px solid #e2e8f0;border-radius:14px;box-shadow:0 1px 3px rgba(0,0,0,.06);font-size:.82rem}}
+body.dark .node-bar{{background:#1e293b;border-color:#334155}}
+.nb-item{{display:flex;align-items:center;gap:6px;white-space:nowrap}}
+.nb-label{{color:#94a3b8;font-weight:600;text-transform:uppercase;font-size:.68rem;letter-spacing:.05em}}
+.nb-val{{font-family:'JetBrains Mono',monospace;font-weight:700;font-size:.9rem}}
+.nb-dot{{width:9px;height:9px;border-radius:50%;display:inline-block}}
+.nb-dot-green{{background:#22c55e}}.nb-dot-red{{background:#ef4444}}.nb-dot-amber{{background:#f59e0b}}
+.nb-sep{{width:1px;height:22px;background:#e2e8f0;margin:0 4px}}
+body.dark .nb-sep{{background:#334155}}
+.nb-port{{display:inline-flex;align-items:center;gap:4px;padding:2px 8px;border-radius:6px;font-size:.75rem;font-family:'JetBrains Mono',monospace;background:rgba(34,197,94,.1);border:1px solid rgba(34,197,94,.25)}}
+body.dark .nb-port{{background:rgba(34,197,94,.12)}}
 .kpi-row{{display:grid;grid-template-columns:repeat(5,1fr);gap:14px;margin-bottom:24px}}
 .kpi{{background:#fff;border:1px solid #e2e8f0;border-radius:14px;padding:20px;box-shadow:0 1px 3px rgba(0,0,0,.06)}}
 body.dark .kpi{{background:#1e293b;border-color:#334155}}
@@ -1343,6 +1406,8 @@ body.dark .ft{{border-color:#334155}}
   </div>
   <span class="df-range" id="df-range"></span>
 </div>
+
+{_node_bar}
 
 <div class="kpi-row">
   <div class="kpi kpi-green">
@@ -2104,7 +2169,134 @@ def fetch_bbs_users(host: str = "127.0.0.1", port: int = 8010, token: str = "") 
     # (skip to avoid N slow requests — manual file covers the important ones)
     print(f"  BPQ32 BBS users fetched: {len(results)}")
     return results
-    return results
+
+
+def fetch_node_stats(host: str = "127.0.0.1", port: int = 8010) -> dict:
+    """Fetch node stats from BPQ32 web interface /Node/Stats.html."""
+    import urllib.request, re as _re
+    result = {"version": "", "uptime": "", "uptime_raw": "",
+              "buffers_max": 0, "buffers_cur": 0, "buffers_min": 0,
+              "buffers_out": 0, "buffers_wait": 0,
+              "known_nodes": 0, "max_nodes": 0,
+              "l4_sent": 0, "l4_rcvd": 0,
+              "l4_tx": 0, "l4_rx": 0, "l4_resent": 0, "l4_reseq": 0,
+              "l3_relayed": 0, "ok": False}
+    try:
+        url = f"http://{host}:{port}/Node/Stats.html"
+        with urllib.request.urlopen(url, timeout=5) as r:
+            html = r.read().decode("utf-8", errors="replace")
+    except Exception as e:
+        print(f"  Node stats fetch failed: {e}")
+        return result
+
+    # Parse table rows — each row has a label in first <td> and values in subsequent <td>s
+    row_re  = _re.compile(r"<tr[^>]*>(.*?)</tr>", _re.I | _re.S)
+    cell_re = _re.compile(r"<td[^>]*>(.*?)</td>", _re.I | _re.S)
+    tag_re  = _re.compile(r"<[^>]+>")
+    for row in row_re.finditer(html):
+        cells = [tag_re.sub("", c.group(1)).strip() for c in cell_re.finditer(row.group(1))]
+        if len(cells) < 2:
+            continue
+        label = cells[0].lower()
+        vals  = cells[1:]
+        if "version" in label:
+            result["version"] = vals[0]
+        elif "uptime" in label:
+            result["uptime_raw"] = vals[0]
+            # Parse DD:HH:MM format
+            parts = vals[0].split(":")
+            if len(parts) == 3:
+                d, h, m = int(parts[0]), int(parts[1]), int(parts[2])
+                pieces = []
+                if d: pieces.append(f"{d}d")
+                if h: pieces.append(f"{h}h")
+                pieces.append(f"{m}m")
+                result["uptime"] = " ".join(pieces)
+            else:
+                result["uptime"] = vals[0]
+        elif "buffers" in label:
+            nums = [int(v) for v in vals if v.isdigit()]
+            if len(nums) >= 5:
+                result["buffers_max"]  = nums[0]
+                result["buffers_cur"]  = nums[1]
+                result["buffers_min"]  = nums[2]
+                result["buffers_out"]  = nums[3]
+                result["buffers_wait"] = nums[4]
+        elif "known nodes" in label:
+            nums = [int(v) for v in vals if v.isdigit()]
+            if len(nums) >= 2:
+                result["known_nodes"] = nums[0]
+                result["max_nodes"]   = nums[1]
+        elif "connects" in label and "l4" in label:
+            nums = [int(v) for v in vals if v.isdigit()]
+            if len(nums) >= 2:
+                result["l4_sent"] = nums[0]
+                result["l4_rcvd"] = nums[1]
+        elif "frames" in label and "l4" in label:
+            nums = [int(v) for v in vals if v.isdigit()]
+            if len(nums) >= 4:
+                result["l4_tx"]     = nums[0]
+                result["l4_rx"]     = nums[1]
+                result["l4_resent"] = nums[2]
+                result["l4_reseq"]  = nums[3]
+        elif "relayed" in label:
+            nums = [int(v) for v in vals if v.isdigit()]
+            if nums:
+                result["l3_relayed"] = nums[0]
+
+    result["ok"] = bool(result["version"])
+    return result
+
+
+def fetch_node_ports(host: str = "127.0.0.1", port: int = 8010) -> list:
+    """Fetch port list from BPQ32 web interface /Node/Ports.html."""
+    import urllib.request, re as _re
+    try:
+        url = f"http://{host}:{port}/Node/Ports.html"
+        with urllib.request.urlopen(url, timeout=5) as r:
+            html = r.read().decode("utf-8", errors="replace")
+    except Exception as e:
+        print(f"  Node ports fetch failed: {e}")
+        return []
+
+    ports = []
+    row_re  = _re.compile(r"<tr[^>]*>(.*?)</tr>", _re.I | _re.S)
+    cell_re = _re.compile(r"<td[^>]*>(.*?)</td>", _re.I | _re.S)
+    tag_re  = _re.compile(r"<[^>]+>")
+    for row in row_re.finditer(html):
+        cells = [tag_re.sub("", c.group(1)).strip() for c in cell_re.finditer(row.group(1))]
+        if len(cells) >= 3 and cells[0].isdigit():
+            ports.append({
+                "port":   int(cells[0]),
+                "driver": cells[1].strip(),
+                "desc":   cells[2].strip(),
+            })
+    return ports
+
+
+def fetch_node_users(host: str = "127.0.0.1", port: int = 8010) -> list:
+    """Fetch active sessions from BPQ32 web interface /Node/Users.html."""
+    import urllib.request, re as _re
+    try:
+        url = f"http://{host}:{port}/Node/Users.html"
+        with urllib.request.urlopen(url, timeout=5) as r:
+            html = r.read().decode("utf-8", errors="replace")
+    except Exception as e:
+        print(f"  Node users fetch failed: {e}")
+        return []
+
+    users = []
+    row_re  = _re.compile(r"<tr[^>]*>(.*?)</tr>", _re.I | _re.S)
+    cell_re = _re.compile(r"<td[^>]*>(.*?)</td>", _re.I | _re.S)
+    tag_re  = _re.compile(r"<[^>]+>")
+    # Skip header row (contains <th>)
+    for row in row_re.finditer(html):
+        if "<th" in row.group(1).lower():
+            continue
+        cells = [tag_re.sub("", c.group(1)).strip() for c in cell_re.finditer(row.group(1))]
+        if cells and cells[0]:
+            users.append(cells)
+    return users
 
 
 # ─── HISTORY DATABASE ────────────────────────────────────────────────────────────
@@ -2442,6 +2634,18 @@ def main():
     resolved = via_qrz + via_grid
     print(f"\n  QRZ: {via_qrz}  grid: {via_grid}  unresolved: {len(all_calls)-resolved}")
 
+    # Fetch live node status from BPQ32 web interface
+    print("\nFetching node status...")
+    node_stats = fetch_node_stats()
+    node_ports = fetch_node_ports()
+    node_users = fetch_node_users()
+    if node_stats.get("ok"):
+        print(f"  Version: {node_stats['version']}  Uptime: {node_stats['uptime']}")
+        print(f"  Buffers: {node_stats['buffers_cur']}/{node_stats['buffers_max']}")
+        print(f"  Ports: {len(node_ports)}  Active sessions: {len(node_users)}")
+    else:
+        print("  Node unreachable (will show offline in dashboard)")
+
     print("\nBuilding HTML...")
     # Load manually entered emails from DB
     email_overrides = {}
@@ -2456,7 +2660,9 @@ def main():
             print(f"  DB emails loaded: {len(email_overrides)}")
     except Exception as e:
         print(f"  Could not load emails from DB: {e}")
-    html = build_html(s, geo, args.days, email_overrides)
+    html = build_html(s, geo, args.days, email_overrides,
+                      node_stats=node_stats, node_ports=node_ports,
+                      node_users=node_users)
 
     # Save updated history to DB before writing HTML
     print("\nSaving history database...")
