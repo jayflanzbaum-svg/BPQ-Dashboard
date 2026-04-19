@@ -1117,6 +1117,16 @@ def build_html(s: Stats, geo: dict, days: int, email_overrides: dict = None,
             _port_chips += f'<span class="nb-port">{p["port"]} {p["driver"]}</span> '
         _active = len(node_users)
         _active_label = f"{_active} station{'s' if _active != 1 else ''}" if _active else "None"
+        _active_calls = [u[0] for u in node_users if u]
+        _active_list_html = ""
+        if _active_calls:
+            _items = "".join(f'<div style="padding:3px 0;font-family:JetBrains Mono,monospace;font-size:.85rem">{c}</div>' for c in _active_calls)
+            _active_list_html = (
+                f'<div class="nb-popup" id="nb-active-popup">'
+                f'<div style="font-weight:600;font-size:.72rem;text-transform:uppercase;'
+                f'letter-spacing:.05em;color:#94a3b8;margin-bottom:4px">Connected Now</div>'
+                f'{_items}</div>'
+            )
         _node_bar = (
             '<div class="node-bar">'
             f'<div class="nb-item"><span class="nb-dot nb-dot-green"></span>'
@@ -1132,8 +1142,10 @@ def build_html(s: Stats, geo: dict, days: int, email_overrides: dict = None,
             f'<div class="nb-item"><span class="nb-label">Nodes</span>'
             f'<span class="nb-val">{ns["known_nodes"]}</span></div>'
             f'<div class="nb-sep"></div>'
-            f'<div class="nb-item"><span class="nb-label">Active</span>'
-            f'<span class="nb-val">{_active_label}</span></div>'
+            f'<div class="nb-item nb-clickable" onclick="document.getElementById(\'nb-active-popup\').classList.toggle(\'show\')" style="position:relative;cursor:pointer">'
+            f'<span class="nb-label">Active</span>'
+            f'<span class="nb-val">{_active_label}</span>'
+            f'{_active_list_html}</div>'
             f'<div class="nb-sep"></div>'
             f'<div class="nb-item"><span class="nb-label">Ports</span>{_port_chips}</div>'
             f'<div class="nb-sep"></div>'
@@ -1196,6 +1208,10 @@ body.dark .node-bar{{background:#1e293b;border-color:#334155}}
 body.dark .nb-sep{{background:#334155}}
 .nb-port{{display:inline-flex;align-items:center;gap:4px;padding:2px 8px;border-radius:6px;font-size:.75rem;font-family:'JetBrains Mono',monospace;background:rgba(34,197,94,.1);border:1px solid rgba(34,197,94,.25)}}
 body.dark .nb-port{{background:rgba(34,197,94,.12)}}
+.nb-clickable:hover .nb-val{{text-decoration:underline}}
+.nb-popup{{display:none;position:absolute;top:100%;left:0;margin-top:6px;padding:10px 14px;background:#fff;border:1px solid #e2e8f0;border-radius:10px;box-shadow:0 4px 12px rgba(0,0,0,.12);z-index:100;min-width:120px}}
+body.dark .nb-popup{{background:#1e293b;border-color:#334155}}
+.nb-popup.show{{display:block}}
 .kpi-row{{display:grid;grid-template-columns:repeat(5,1fr);gap:14px;margin-bottom:24px}}
 .kpi{{background:#fff;border:1px solid #e2e8f0;border-radius:14px;padding:20px;box-shadow:0 1px 3px rgba(0,0,0,.06)}}
 body.dark .kpi{{background:#1e293b;border-color:#334155}}
@@ -2122,23 +2138,24 @@ def fetch_bbs_users(host: str = "127.0.0.1", port: int = 8010, token: str = "") 
         except Exception:
             return None
 
-    # BPQ32 AJAX endpoints — try each until we get callsigns
+    # BPQ32 AJAX endpoints — UserList.txt returns pipe-separated callsigns
     tok = token or ""
     candidates = [
-        f"Mail/GetData?{tok}",
+        f"Mail/UserList.txt?{tok}",
         f"Mail/UserList?{tok}",
+        f"Mail/GetData?{tok}",
         f"Mail/GetUsers?{tok}",
     ]
     raw = None
     for path in candidates:
         text = _post(path) or _get(path)
         if text:
-            # Look for newline-separated callsign list
-            lines = [l.strip() for l in text.replace('\r','').split('\n') if l.strip()]
-            calls = [l for l in lines if valid.match(l.upper())]
+            # BPQ32 returns pipe-separated values (CALL1|CALL2|CALL3|)
+            tokens = [t.strip() for t in text.replace('\r','').replace('\n','|').split('|') if t.strip()]
+            calls = [t.upper() for t in tokens if valid.match(t.upper())]
             if calls:
                 raw = calls
-                print(f"  BPQ32 user list from: {path}")
+                print(f"  BPQ32 user list from: {path} ({len(calls)} users)")
                 break
             # Alternatively try parsing as HTML table
             if "<table" in text.lower() and "<td" in text.lower():
@@ -2169,6 +2186,31 @@ def fetch_bbs_users(host: str = "127.0.0.1", port: int = 8010, token: str = "") 
     # (skip to avoid N slow requests — manual file covers the important ones)
     print(f"  BPQ32 BBS users fetched: {len(results)}")
     return results
+
+
+def fetch_fwd_partners(host: str = "127.0.0.1", port: int = 8010, token: str = "") -> set:
+    """Fetch the configured forwarding partners from BPQ32 web interface.
+    Returns a set of callsigns (no SSID stripped — preserves whatever BPQ32 reports)."""
+    import urllib.request, re as _re
+    valid = _re.compile(r"^[A-Z0-9]{1,3}[0-9][A-Z]{1,4}(-\d+)?$")
+    partners = set()
+    if not token:
+        print("  Forwarding partners: no token configured, skipping")
+        return partners
+    url = f"http://{host}:{port}/Mail/FwdList.txt?{token}"
+    try:
+        req = urllib.request.Request(url, data=b"", method="POST")
+        with urllib.request.urlopen(req, timeout=3) as r:
+            text = r.read().decode("utf-8", errors="replace")
+    except Exception as e:
+        print(f"  Forwarding partners fetch failed: {e}")
+        return partners
+    tokens = [t.strip() for t in text.replace('\r','').replace('\n','|').split('|') if t.strip()]
+    for t in tokens:
+        if valid.match(t.upper()):
+            partners.add(t.upper())
+    print(f"  Forwarding partners: {sorted(partners)}")
+    return partners
 
 
 def fetch_node_stats(host: str = "127.0.0.1", port: int = 8010) -> dict:
@@ -2559,6 +2601,14 @@ def main():
     bbs_web_users = fetch_bbs_users(token=bpq_token)
     if bbs_web_users:
         print(f"  Web users found: {sorted(bbs_web_users.keys())}")
+
+    # Fetch authoritative forwarding partner list — overrides B2-protocol inference
+    print("\nFetching forwarding partner list from BPQ32...")
+    fwd_partners = fetch_fwd_partners(token=bpq_token)
+    if fwd_partners:
+        # Replace the B2-inferred set with the authoritative configured-partner set.
+        # Anyone who connects but isn't in this list is a Guest, even if they used B2.
+        s.inbound_b2_calls = {strip_ssid(c) for c in fwd_partners}
 
     # Merge manually specified users from bbs_users.txt
     manual_users = load_manual_bbs_users(script_dir)
