@@ -2453,7 +2453,7 @@ def db_save(conn, s: Stats):
     c = conn.cursor()
     today = datetime.now().strftime("%Y-%m-%d")
     for call, cv in s.bbs_callers.items():
-        is_p      = 1 if call in s.inbound_b2_calls else 0
+        is_p      = 1 if strip_ssid(call) in s.inbound_b2_calls else 0
         modes_str = ",".join(cv.get("modes", set()))
         dates     = sorted(s.station_dates.get(call, set()))
         last_seen = dates[-1] if dates else today
@@ -2461,7 +2461,7 @@ def db_save(conn, s: Stats):
                      VALUES(?,?,?,?,?,?,?)
                      ON CONFLICT(call) DO UPDATE SET
                        connects=MAX(connects,excluded.connects),
-                       is_partner=MAX(is_partner,excluded.is_partner),
+                       is_partner=excluded.is_partner,
                        modes=CASE WHEN excluded.modes!='' THEN excluded.modes ELSE modes END,
                        grid=CASE WHEN excluded.grid!='' THEN excluded.grid ELSE grid END,
                        first_seen=CASE WHEN first_seen='' THEN excluded.first_seen ELSE first_seen END,
