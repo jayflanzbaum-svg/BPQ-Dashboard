@@ -2139,15 +2139,32 @@ def fetch_bbs_users(host: str = "127.0.0.1", port: int = 8010, token: str = "") 
             return None
 
     # BPQ32 AJAX endpoints — UserList.txt returns pipe-separated callsigns
+    # First try the session-establishing approach (GET parent page, then POST AJAX)
     tok = token or ""
+    raw = None
+    if tok:
+        try:
+            text = _bpq_session_get(host, port, tok,
+                                    f"/Mail/Users?{tok}",
+                                    f"/Mail/UserList.txt?{tok}")
+            if text and "Session had been lost" not in text and "Sorry" not in text[:200]:
+                tokens = [t.strip() for t in text.replace('\r','').replace('\n','|').split('|') if t.strip()]
+                calls = [t.upper() for t in tokens if valid.match(t.upper())]
+                if calls:
+                    raw = calls
+                    print(f"  BPQ32 user list (session): {len(calls)} users")
+        except Exception:
+            pass
+
     candidates = [
         f"Mail/UserList.txt?{tok}",
         f"Mail/UserList?{tok}",
         f"Mail/GetData?{tok}",
         f"Mail/GetUsers?{tok}",
     ]
-    raw = None
     for path in candidates:
+        if raw:
+            break
         text = _post(path) or _get(path)
         if text:
             # BPQ32 returns pipe-separated values (CALL1|CALL2|CALL3|)
@@ -2188,44 +2205,45 @@ def fetch_bbs_users(host: str = "127.0.0.1", port: int = 8010, token: str = "") 
     return results
 
 
+def _bpq_session_get(host: str, port: int, token: str, parent_path: str, ajax_path: str):
+    """Establish a BPQ32 web session by GETting the parent page first,
+    then POST the AJAX endpoint within the same session (cookies preserved)."""
+    import urllib.request, http.cookiejar
+    cj = http.cookiejar.CookieJar()
+    opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(cj))
+    # First request: GET the parent page to establish/refresh the session
+    parent_url = f"http://{host}:{port}{parent_path}"
+    try:
+        opener.open(parent_url, timeout=3).read()
+    except Exception:
+        pass
+    # Second request: POST the AJAX endpoint with cookies from the first
+    ajax_url = f"http://{host}:{port}{ajax_path}"
+    req = urllib.request.Request(ajax_url, data=b"", method="POST")
+    with opener.open(req, timeout=3) as r:
+        return r.read().decode("utf-8", errors="replace")
+
+
 def fetch_fwd_partners(host: str = "127.0.0.1", port: int = 8010, token: str = "") -> set:
     """Fetch the configured forwarding partners from BPQ32 web interface.
     Returns a set of base callsigns (SSID stripped)."""
-    import urllib.request, re as _re
+    import re as _re
     valid = _re.compile(r"^[A-Z0-9]{1,3}[0-9][A-Z]{1,4}(-\d+)?$")
     partners = set()
     if not token:
         print("  Forwarding partners: no token configured, skipping")
         return partners
-    # Try multiple endpoint variants — POST and GET, with and without .txt
-    candidates = [
-        ("POST", f"/Mail/FwdList.txt?{token}"),
-        ("GET",  f"/Mail/FwdList.txt?{token}"),
-        ("POST", f"/Mail/FwdList?{token}"),
-        ("GET",  f"/Mail/FwdList?{token}"),
-    ]
-    text = None
-    used = None
-    for method, path in candidates:
-        url = f"http://{host}:{port}{path}"
-        try:
-            if method == "POST":
-                req = urllib.request.Request(url, data=b"", method="POST")
-            else:
-                req = urllib.request.Request(url, method="GET")
-            with urllib.request.urlopen(req, timeout=3) as r:
-                body = r.read().decode("utf-8", errors="replace")
-            if body and body.strip():
-                text = body
-                used = f"{method} {path}"
-                break
-        except Exception as e:
-            continue
-    if text is None:
-        print("  Forwarding partners fetch failed: no endpoint returned data")
+    try:
+        text = _bpq_session_get(host, port, token,
+                                f"/Mail/FWD?{token}",
+                                f"/Mail/FwdList.txt?{token}")
+    except Exception as e:
+        print(f"  Forwarding partners fetch failed: {e}")
         return partners
-    print(f"  Forwarding partners endpoint: {used}")
-    print(f"  Raw response (first 200 chars): {text[:200]!r}")
+    if "Session had been lost" in text or "Sorry" in text[:200]:
+        print(f"  Forwarding partners: session lost — token may be stale")
+        print(f"  Raw response (first 200 chars): {text[:200]!r}")
+        return partners
     tokens = [t.strip() for t in text.replace('\r','').replace('\n','|').split('|') if t.strip()]
     for t in tokens:
         if valid.match(t.upper()):
