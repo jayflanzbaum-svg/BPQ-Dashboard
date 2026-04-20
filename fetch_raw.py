@@ -47,18 +47,41 @@ def is_login_page(text: str) -> bool:
 
 
 def auto_detect_key(opener) -> str:
-    """GET the BPQ root page and regex the session key from any /Mail/Foo?KEY link."""
-    url = f"http://{HOST}:{PORT}/"
-    with opener.open(url, timeout=5) as r:
-        html = r.read().decode("utf-8", errors="replace")
-    if is_login_page(html):
-        raise RuntimeError("Root page returned a login page — sysop credentials likely wrong")
-    m = KEY_RE.search(html)
-    if not m:
-        raise RuntimeError(
-            f"No /Mail/Xxx?KEY link found in root page (first 500 chars):\n{html[:500]}"
-        )
-    return m.group(1)
+    """Find the rotating session key by hitting Mail pages directly.
+
+    Strategy: GET several Mail entry points; on success BPQ either:
+      (a) redirects to a URL like /Mail/Header?KEY (key in r.geturl()), or
+      (b) returns HTML that contains /Mail/Xxx?KEY links we can regex.
+    Try /Mail/Header, /Mail/Status, /Mail/Users in turn.
+    """
+    candidates = ["/Mail/Header", "/Mail/Status", "/Mail/Users", "/Node/NodeIndex.html", "/"]
+    last_err = None
+    for path in candidates:
+        url = f"http://{HOST}:{PORT}{path}"
+        try:
+            with opener.open(url, timeout=5) as r:
+                final_url = r.geturl()
+                html = r.read().decode("utf-8", errors="replace")
+        except Exception as e:
+            last_err = f"{path}: {e}"
+            continue
+        if is_login_page(html):
+            raise RuntimeError(
+                f"{path} returned a login page — sysop credentials are wrong "
+                f"(check USER= in bpq32.cfg Telnet port block)"
+            )
+        # (a) Key embedded in redirected URL
+        m = KEY_RE.search(final_url)
+        if m:
+            print(f"  Key found in redirect: {final_url}")
+            return m.group(1)
+        # (b) Key embedded in returned HTML
+        m = KEY_RE.search(html)
+        if m:
+            print(f"  Key found in HTML of: {path}")
+            return m.group(1)
+        last_err = f"{path}: no KEY in URL or body (first 200 chars: {html[:200]!r})"
+    raise RuntimeError(f"No KEY found via any candidate page. Last error: {last_err}")
 
 
 def fetch_and_dump(opener, path: str, key: str, out_file: str) -> None:
