@@ -20,6 +20,7 @@ Optional:
 import os
 import re
 import sys
+import http.cookiejar
 import urllib.request
 from urllib.error import HTTPError, URLError
 
@@ -34,11 +35,13 @@ KEY_RE        = re.compile(r'/Mail/[A-Za-z]+\?(M[0-9A-Fa-f]+)')
 
 
 def make_opener():
-    """Build an HTTP opener with HTTP Basic Auth for the BPQ web interface."""
+    """Build an HTTP opener with HTTP Basic Auth + cookie jar for the BPQ web interface.
+    Cookies are needed so AJAX endpoints can ride the session opened by the parent page."""
     pwmgr = urllib.request.HTTPPasswordMgrWithDefaultRealm()
     pwmgr.add_password(None, f"http://{HOST}:{PORT}/", USER, PASS)
-    handler = urllib.request.HTTPBasicAuthHandler(pwmgr)
-    return urllib.request.build_opener(handler)
+    auth_handler   = urllib.request.HTTPBasicAuthHandler(pwmgr)
+    cookie_handler = urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar())
+    return urllib.request.build_opener(auth_handler, cookie_handler)
 
 
 def is_login_page(text: str) -> bool:
@@ -84,12 +87,16 @@ def auto_detect_key(opener) -> str:
     raise RuntimeError(f"No KEY found via any candidate page. Last error: {last_err}")
 
 
-def fetch_and_dump(opener, path: str, key: str, out_file: str) -> None:
+def fetch_and_dump(opener, path: str, key: str, out_file: str, method: str = "GET") -> None:
     """Fetch a /Mail/* endpoint with the session key, save to disk, print summary."""
     url = f"http://{HOST}:{PORT}{path}?{key}"
-    print(f"\n--- Fetching {url}")
+    print(f"\n--- {method} {url}")
     try:
-        with opener.open(url, timeout=10) as r:
+        if method == "POST":
+            req = urllib.request.Request(url, data=b"", method="POST")
+        else:
+            req = urllib.request.Request(url, method="GET")
+        with opener.open(req, timeout=10) as r:
             status = r.status
             body   = r.read()
     except HTTPError as e:
@@ -129,10 +136,14 @@ def main() -> int:
         return 1
     print(f"  Key: {key}")
 
-    fetch_and_dump(opener, "/Mail/FWD",   key, "raw_fwd.html")
-    fetch_and_dump(opener, "/Mail/Users", key, "raw_users.html")
+    # The /Mail/FWD and /Mail/Users pages are JS shells — fetch them to open the
+    # session, then POST the AJAX endpoints they call to get the actual data.
+    fetch_and_dump(opener, "/Mail/FWD",          key, "raw_fwd.html")
+    fetch_and_dump(opener, "/Mail/FwdList.txt",  key, "raw_fwdlist.txt", method="POST")
+    fetch_and_dump(opener, "/Mail/Users",        key, "raw_users.html")
+    fetch_and_dump(opener, "/Mail/UserList.txt", key, "raw_userlist.txt", method="POST")
 
-    print("\nDone. Inspect raw_fwd.html and raw_users.html before writing parsers.")
+    print("\nDone. Inspect raw_fwdlist.txt and raw_userlist.txt — those have the data.")
     return 0
 
 
