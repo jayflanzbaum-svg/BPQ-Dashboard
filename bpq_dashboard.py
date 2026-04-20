@@ -2190,25 +2190,46 @@ def fetch_bbs_users(host: str = "127.0.0.1", port: int = 8010, token: str = "") 
 
 def fetch_fwd_partners(host: str = "127.0.0.1", port: int = 8010, token: str = "") -> set:
     """Fetch the configured forwarding partners from BPQ32 web interface.
-    Returns a set of callsigns (no SSID stripped — preserves whatever BPQ32 reports)."""
+    Returns a set of base callsigns (SSID stripped)."""
     import urllib.request, re as _re
     valid = _re.compile(r"^[A-Z0-9]{1,3}[0-9][A-Z]{1,4}(-\d+)?$")
     partners = set()
     if not token:
         print("  Forwarding partners: no token configured, skipping")
         return partners
-    url = f"http://{host}:{port}/Mail/FwdList.txt?{token}"
-    try:
-        req = urllib.request.Request(url, data=b"", method="POST")
-        with urllib.request.urlopen(req, timeout=3) as r:
-            text = r.read().decode("utf-8", errors="replace")
-    except Exception as e:
-        print(f"  Forwarding partners fetch failed: {e}")
+    # Try multiple endpoint variants — POST and GET, with and without .txt
+    candidates = [
+        ("POST", f"/Mail/FwdList.txt?{token}"),
+        ("GET",  f"/Mail/FwdList.txt?{token}"),
+        ("POST", f"/Mail/FwdList?{token}"),
+        ("GET",  f"/Mail/FwdList?{token}"),
+    ]
+    text = None
+    used = None
+    for method, path in candidates:
+        url = f"http://{host}:{port}{path}"
+        try:
+            if method == "POST":
+                req = urllib.request.Request(url, data=b"", method="POST")
+            else:
+                req = urllib.request.Request(url, method="GET")
+            with urllib.request.urlopen(req, timeout=3) as r:
+                body = r.read().decode("utf-8", errors="replace")
+            if body and body.strip():
+                text = body
+                used = f"{method} {path}"
+                break
+        except Exception as e:
+            continue
+    if text is None:
+        print("  Forwarding partners fetch failed: no endpoint returned data")
         return partners
+    print(f"  Forwarding partners endpoint: {used}")
+    print(f"  Raw response (first 200 chars): {text[:200]!r}")
     tokens = [t.strip() for t in text.replace('\r','').replace('\n','|').split('|') if t.strip()]
     for t in tokens:
         if valid.match(t.upper()):
-            partners.add(t.upper())
+            partners.add(strip_ssid(t.upper()))
     print(f"  Forwarding partners: {sorted(partners)}")
     return partners
 
