@@ -743,7 +743,8 @@ def _station_type(base: str, s: Stats) -> str:
 
 def build_html(s: Stats, geo: dict, days: int, email_overrides: dict = None,
                node_stats: dict = None, node_ports: list = None,
-               node_users: list = None) -> str:
+               node_users: list = None,
+               lists_meta: dict = None) -> str:
     if email_overrides is None:
         email_overrides = {}
     if node_stats is None:
@@ -752,6 +753,9 @@ def build_html(s: Stats, geo: dict, days: int, email_overrides: dict = None,
         node_ports = []
     if node_users is None:
         node_users = []
+    if lists_meta is None:
+        lists_meta = {"source": "none", "fetched_at": 0,
+                      "partners_count": 0, "users_count": 0}
     # Merge email overrides into geo — override takes precedence over QRZ
     for call, em in email_overrides.items():
         if call in geo and geo[call]:
@@ -1106,6 +1110,75 @@ def build_html(s: Stats, geo: dict, days: int, email_overrides: dict = None,
     crash_col  = "#f85149" if n_crashes else "#22c55e"
     crash_dates_json = _json.dumps([cd["iso"] for cd in s.crash_dates if not cd.get("startup")])
 
+    # -- Build BPQ-list cache freshness pill --
+    # Surfaces stale/failed list fetches that would otherwise be silently masked by
+    # fallback-to-stale-cache. Color thresholds:
+    #   live  + < 2h   -> green
+    #   cache + < 24h  -> amber (yellow)
+    #   cache + >= 24h -> red (STALE)
+    #   none           -> red (UNAVAILABLE)
+    _lm = lists_meta or {}
+    _src = _lm.get("source", "none")
+    _ts  = float(_lm.get("fetched_at", 0))
+    _pcnt = int(_lm.get("partners_count", 0))
+    _ucnt = int(_lm.get("users_count", 0))
+    _age_s = (datetime.now().timestamp() - _ts) if _ts > 0 else None
+
+    def _humanize_age(secs):
+        if secs is None: return "never"
+        m = int(secs // 60)
+        if m < 60:   return f"{m} min ago" if m != 1 else "1 min ago"
+        h = int(secs // 3600)
+        if h < 24:   return f"{h} hr ago" if h != 1 else "1 hr ago"
+        d = int(secs // 86400)
+        return f"{d} days old" if d != 1 else "1 day old"
+
+    # Pick label and color
+    if _src == "none":
+        _pill_label = "Lists: UNAVAILABLE"
+        _pill_sub   = "classification degraded"
+        _pill_color = "red"
+    elif _src == "stale-cache" or (_src == "cache" and _age_s is not None and _age_s >= 86400):
+        _pill_label = "Lists: STALE"
+        _pill_sub   = _humanize_age(_age_s)
+        _pill_color = "red"
+    elif _src == "cache" or (_src == "live" and _age_s is not None and _age_s >= 7200):
+        _pill_label = "Lists: cached"
+        _pill_sub   = _humanize_age(_age_s)
+        _pill_color = "amber"
+    else:  # _src == "live" and < 2h
+        _pill_label = "Lists: live"
+        _pill_sub   = _humanize_age(_age_s)
+        _pill_color = "green"
+
+    # 12-hour AM/PM timestamp for tooltip
+    if _ts > 0:
+        _t = datetime.fromtimestamp(_ts)
+        _tip_ts = f"{_t.strftime('%Y-%m-%d')} {_t.strftime('%I:%M %p').lstrip('0')}"
+    else:
+        _tip_ts = "never"
+    _pill_tip = f"Last fetched {_tip_ts} \u00b7 partners={_pcnt} users={_ucnt} \u00b7 source={_src}"
+
+    _pill_bg = {"green": "rgba(34,197,94,.12)",
+                "amber": "rgba(249,115,22,.12)",
+                "red":   "rgba(239,68,68,.12)"}[_pill_color]
+    _pill_fg = {"green": "#22c55e",
+                "amber": "#f97316",
+                "red":   "#ef4444"}[_pill_color]
+    _pill_bd = {"green": "rgba(34,197,94,.35)",
+                "amber": "rgba(249,115,22,.35)",
+                "red":   "rgba(239,68,68,.35)"}[_pill_color]
+    _lists_pill = (
+        f'<span class="lists-pill" title="{_pill_tip}" '
+        f'style="display:inline-flex;align-items:center;gap:6px;padding:3px 10px;'
+        f'border-radius:999px;background:{_pill_bg};color:{_pill_fg};'
+        f'border:1px solid {_pill_bd};font-size:.75rem;font-weight:600;'
+        f'font-family:Inter,sans-serif">'
+        f'<span>{_pill_label}</span>'
+        f'<span style="opacity:.75;font-weight:500">\u00b7 {_pill_sub}</span>'
+        f'</span>'
+    )
+
     # -- Build node status bar HTML --
     ns = node_stats
     _node_bar = ""
@@ -1172,6 +1245,9 @@ def build_html(s: Stats, geo: dict, days: int, email_overrides: dict = None,
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css"/>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
 <style>
+/* TODO: refactor 53 hardcoded color rules into :root CSS variables
+   (--ok, --warn, --info, --bg, --card, --bdr) to enable single-point
+   theme changes. Defer until after current feature work stabilizes. */
 *{{box-sizing:border-box;margin:0;padding:0}}
 html{{font-size:15px}}
 body{{background:#f8fafc;color:#1e293b;font-family:'Inter',sans-serif;line-height:1.5;min-height:100vh}}
@@ -1404,6 +1480,7 @@ body.dark .ft{{border-color:#334155}}
           title="Re-fetch the partner and registered-user lists from BPQ32 (use after adding a new forwarding partner)">
     ⟳ Refresh Lists
   </button>
+  {_lists_pill}
   <span class="rfx-hint">Run <code>refresh.bat</code> first, then click Reload</span>
 </div>
 
@@ -2864,9 +2941,22 @@ def main():
             print(f"  DB emails loaded: {len(email_overrides)}")
     except Exception as e:
         print(f"  Could not load emails from DB: {e}")
+    # Build metadata about the list fetch for the freshness pill.
+    # Also write a render-time WARNING if the fetch was fully unavailable so
+    # the failure is captured in both the UI and the log.
+    lists_meta = {
+        "source":         bpq_lists.get("source", "none"),
+        "fetched_at":     bpq_lists.get("fetched_at", 0),
+        "partners_count": len(fwd_partners),
+        "users_count":    len(bpq_users),
+    }
+    if lists_meta["source"] == "none":
+        _log_fetch(script_dir, "WARNING: rendering dashboard with no list data (classification degraded)")
+
     html = build_html(s, geo, args.days, email_overrides,
                       node_stats=node_stats, node_ports=node_ports,
-                      node_users=node_users)
+                      node_users=node_users,
+                      lists_meta=lists_meta)
 
     # Save updated history to DB before writing HTML
     print("\nSaving history database...")
