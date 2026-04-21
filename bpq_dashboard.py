@@ -1179,60 +1179,138 @@ def build_html(s: Stats, geo: dict, days: int, email_overrides: dict = None,
         f'</span>'
     )
 
-    # -- Build node status bar HTML --
-    ns = node_stats
-    _node_bar = ""
-    if ns.get("ok"):
-        buf_pct = (ns["buffers_cur"] / ns["buffers_max"] * 100) if ns["buffers_max"] else 0
-        buf_color = "green" if buf_pct > 50 else ("amber" if buf_pct > 20 else "red")
-        _port_chips = ""
-        for p in node_ports:
-            _port_chips += f'<span class="nb-port">{p["port"]} {p["driver"]}</span> '
-        _active = len(node_users)
-        _active_label = f"{_active} station{'s' if _active != 1 else ''}" if _active else "None"
-        _active_calls = [u[0] for u in node_users if u]
-        _active_list_html = ""
-        if _active_calls:
-            _items = "".join(f'<div style="padding:3px 0;font-family:JetBrains Mono,monospace;font-size:.85rem">{c}</div>' for c in _active_calls)
-            _active_list_html = (
-                f'<div class="nb-popup" id="nb-active-popup">'
-                f'<div style="font-weight:600;font-size:.72rem;text-transform:uppercase;'
-                f'letter-spacing:.05em;color:#94a3b8;margin-bottom:4px">Connected Now</div>'
-                f'{_items}</div>'
-            )
-        _node_bar = (
-            '<div class="node-bar">'
-            f'<div class="nb-item"><span class="nb-dot nb-dot-green"></span>'
-            f'<span class="nb-label">Node</span><span class="nb-val">Online</span></div>'
-            f'<div class="nb-sep"></div>'
-            f'<div class="nb-item"><span class="nb-label">Uptime</span>'
-            f'<span class="nb-val">{ns["uptime"]}</span></div>'
-            f'<div class="nb-sep"></div>'
-            f'<div class="nb-item"><span class="nb-label">Buffers</span>'
-            f'<span class="nb-val"><span class="nb-dot nb-dot-{buf_color}" '
-            f'style="margin-right:3px"></span>{ns["buffers_cur"]}/{ns["buffers_max"]}</span></div>'
-            f'<div class="nb-sep"></div>'
-            f'<div class="nb-item"><span class="nb-label">Nodes</span>'
-            f'<span class="nb-val">{ns["known_nodes"]}</span></div>'
-            f'<div class="nb-sep"></div>'
-            f'<div class="nb-item nb-clickable" onclick="document.getElementById(\'nb-active-popup\').classList.toggle(\'show\')" style="position:relative;cursor:pointer">'
-            f'<span class="nb-label">Active</span>'
-            f'<span class="nb-val">{_active_label}</span>'
-            f'{_active_list_html}</div>'
-            f'<div class="nb-sep"></div>'
-            f'<div class="nb-item"><span class="nb-label">Ports</span>{_port_chips}</div>'
-            f'<div class="nb-sep"></div>'
-            f'<div class="nb-item"><span class="nb-label">Version</span>'
-            f'<span class="nb-val" style="font-size:.78rem">{ns["version"]}</span></div>'
+    # -- Build header chips (Row 1) and vitals/active/ports for Row 2 --
+    # Only render chips when source data is present — never display literal
+    # fallback strings like "unknown". Empty/missing values cause the chip
+    # to be omitted entirely.
+    _bpq_version = (node_stats or {}).get("version") or ""
+    _city = LOCATION.split(",")[0].strip() if LOCATION else ""
+
+    _chips_html = ""
+    if _bpq_version:
+        _chips_html += f'<span class="chip">BPQ32 v{_bpq_version}</span>'
+    if HOME_GRID and _city:
+        _chips_html += f'<span class="chip">{HOME_GRID} · {_city}</span>'
+    elif HOME_GRID:
+        _chips_html += f'<span class="chip">{HOME_GRID}</span>'
+    elif _city:
+        _chips_html += f'<span class="chip">{_city}</span>'
+    if OP_CALL:
+        _chips_html += f'<span class="chip">Op: {OP_CALL}</span>'
+
+    # Info-icon tooltip: generated time, date range, auto-refresh state (set live by JS)
+    _info_tooltip = f"Generated {now}"
+    if dlabel:
+        _info_tooltip += f" · Date range {dlabel}"
+
+    # Vitals + active + ports (only render if we have node stats)
+    _ns_ok = bool(node_stats and node_stats.get("ok"))
+    if _ns_ok:
+        _v_buf_max = node_stats.get("buffers_max", 0)
+        _v_buf_cur = node_stats.get("buffers_cur", 0)
+        _v_buf_pct = (_v_buf_cur / _v_buf_max * 100) if _v_buf_max else 0
+        _v_buf_dot = "green" if _v_buf_pct > 50 else ("amber" if _v_buf_pct > 20 else "red")
+        _v_uptime  = node_stats.get("uptime") or "—"
+        _v_buf     = f'{_v_buf_cur}/{_v_buf_max}' if _v_buf_max else "—"
+        _v_nodes   = node_stats.get("known_nodes")
+        _v_nodes   = _v_nodes if _v_nodes is not None else "—"
+        _n_ports   = len(node_ports)
+    else:
+        _v_uptime  = "—"
+        _v_buf     = "—"
+        _v_nodes   = "—"
+        _v_buf_dot = "gray"
+        _n_ports   = 0
+
+    _port_chips_inner = ""
+    for p in node_ports:
+        _port_chips_inner += f'<span class="chip">{p["port"]} {p["driver"]}</span>'
+
+    # Active stations chip + tooltip
+    _n_active = len(node_users)
+    if _n_active > 0:
+        _active_class = "on"
+        _active_dot   = "green"
+        _active_label = f"{_n_active} active"
+    else:
+        _active_class = "off"
+        _active_dot   = "gray"
+        _active_label = "0 active"
+    # Tooltip: list connected callsigns (with extra fields if BPQ exposed them)
+    _active_lines = []
+    for u in node_users:
+        if not u: continue
+        line = u[0]
+        # Try to add mode/duration if subsequent cells look like them
+        if len(u) > 1 and u[1]:
+            line += f" via {u[1]}"
+        if len(u) > 2 and u[2]:
+            line += f" · {u[2]}"
+        _active_lines.append(line)
+    _active_tooltip = "\n".join(_active_lines) if _active_lines else "No stations connected"
+    # HTML-escape for title attribute
+    _active_tooltip_attr = (_active_tooltip
+                            .replace("&", "&amp;").replace('"', "&quot;")
+                            .replace("<", "&lt;").replace(">", "&gt;"))
+
+    # Pre-compose the action-bar HTML so the f-string template stays readable
+    _action_bar = (
+        '<div class="action-bar">'
+          '<div class="action-left">'
+            '<div class="split-btn">'
+              '<button class="split-main" onclick="splitDoFast()" title="Re-parse local logs against the cached partner/user lists">⟳ Refresh</button>'
+              '<button class="split-caret" id="split-caret" onclick="splitToggleMenu(event)" '
+              'aria-haspopup="menu" aria-expanded="false" aria-label="Refresh options">▾</button>'
+              '<div class="split-menu" id="split-menu" role="menu">'
+                '<div class="split-menu-item" role="menuitem" tabindex="0" onclick="splitDoFast()">'
+                  '<div class="split-menu-label">Rebuild from logs</div>'
+                  '<div class="split-menu-sub">Fast · re-parses local logs only</div>'
+                '</div>'
+                '<div class="split-menu-item" role="menuitem" tabindex="0" onclick="splitDoSlow()">'
+                  '<div class="split-menu-label">Re-fetch from BPQ</div>'
+                  '<div class="split-menu-sub">Slow · pulls live partner/user lists</div>'
+                '</div>'
+              '</div>'
             '</div>'
-        )
-    elif not ns.get("ok") and node_stats:
-        _node_bar = (
-            '<div class="node-bar">'
-            '<div class="nb-item"><span class="nb-dot nb-dot-red"></span>'
-            '<span class="nb-label">Node</span><span class="nb-val">Unreachable</span></div>'
+            '<select class="df-sel" id="df-sel" onchange="applyPreset(this.value)">'
+              '<option value="all">All data</option>'
+              '<option value="today" selected>Today</option>'
+              '<option value="yesterday">Yesterday</option>'
+              '<option value="week">Last 7 days</option>'
+              '<option value="month">This month</option>'
+              '<option value="year">This year</option>'
+              '<option value="custom">Custom range…</option>'
+            '</select>'
+            '<div class="df-custom" id="df-custom">'
+              '<input class="df-inp" type="date" id="df-from">'
+              '<span class="df-sep">to</span>'
+              '<input class="df-inp" type="date" id="df-to">'
+              '<button class="df-apply" onclick="applyCustom()">Apply</button>'
             '</div>'
-        )
+            '<span class="df-range" id="df-range"></span>'
+          '</div>'
+          '<div class="vitals">'
+        + (
+            f'<div class="vitals-item"><span class="dot dot-green"></span><span>Online</span></div>'
+            f'<div class="vitals-item"><span class="lbl">Up</span><strong>{_v_uptime}</strong></div>'
+            f'<div class="vitals-item"><span class="lbl">Buf</span><span class="dot dot-{_v_buf_dot}"></span><strong>{_v_buf}</strong></div>'
+            f'<div class="vitals-item"><span class="lbl">Nodes</span><strong>{_v_nodes}</strong></div>'
+            f'<button class="ports-chip" id="ports-chip" onclick="togglePorts()" aria-expanded="false">'
+            f'<span>{_n_ports} ports</span><span class="caret">▸</span></button>'
+            if _ns_ok else
+            '<div class="vitals-item"><span class="dot dot-red"></span><span>Node unreachable</span></div>'
+        ) +
+          '</div>'
+          '<div class="action-right">'
+            f'<span class="status-chip {_active_class}" title="{_active_tooltip_attr}">'
+            f'<span class="dot dot-{_active_dot}"></span>{_active_label}</span>'
+            f'{_lists_pill}'
+          '</div>'
+        '</div>'
+        f'<div class="ports-expanded" id="ports-expanded">'
+          f'<div class="ports-expanded-inner">{_port_chips_inner}</div>'
+        f'</div>'
+    )
 
     return f"""<!DOCTYPE html>
 <html lang="en">
@@ -1261,33 +1339,11 @@ body.dark{{background:#0f172a;color:#e2e8f0}}
 .hdr-icon{{width:44px;height:44px;background:rgba(20,184,166,.1);border:1px solid rgba(20,184,166,.25);border-radius:12px;display:flex;align-items:center;justify-content:center;font-size:22px;flex-shrink:0}}
 .hdr-left{{display:flex;align-items:flex-start;gap:12px}}
 .hdr-title{{font-size:1.35rem;font-weight:700;color:#0f172a;letter-spacing:-.3px;line-height:1.2}}
-.hdr-title .accent{{color:#0d9488}}
 body.dark .hdr-title{{color:#f1f5f9}}
-body.dark .hdr-title .accent{{color:#2dd4bf}}
-.hdr-sub{{font-size:.8rem;color:#64748b;margin-top:3px}}
-.hdr-sub .mono{{font-family:'JetBrains Mono',monospace;font-size:.78rem;color:#0d9488;font-weight:600}}
-body.dark .hdr-sub{{color:#94a3b8}}
-body.dark .hdr-sub .mono{{color:#2dd4bf}}
 .tog{{cursor:pointer;background:#fff;border:1px solid #e2e8f0;border-radius:20px;padding:6px 14px;font-size:.78rem;color:#475569;font-family:inherit;font-weight:500;display:flex;align-items:center;gap:6px;box-shadow:0 1px 2px rgba(0,0,0,.05)}}
 body.dark .tog{{background:#1e293b;border-color:#334155;color:#94a3b8}}
 
 /* ── KPI cards ── */
-/* -- node status bar -- */
-.node-bar{{display:flex;flex-wrap:wrap;gap:12px;align-items:center;margin-bottom:18px;padding:14px 18px;background:#fff;border:1px solid #e2e8f0;border-radius:14px;box-shadow:0 1px 3px rgba(0,0,0,.06);font-size:.82rem}}
-body.dark .node-bar{{background:#1e293b;border-color:#334155}}
-.nb-item{{display:flex;align-items:center;gap:6px;white-space:nowrap}}
-.nb-label{{color:#94a3b8;font-weight:600;text-transform:uppercase;font-size:.68rem;letter-spacing:.05em}}
-.nb-val{{font-family:'JetBrains Mono',monospace;font-weight:700;font-size:.9rem}}
-.nb-dot{{width:9px;height:9px;border-radius:50%;display:inline-block}}
-.nb-dot-green{{background:#22c55e}}.nb-dot-red{{background:#ef4444}}.nb-dot-amber{{background:#f59e0b}}
-.nb-sep{{width:1px;height:22px;background:#e2e8f0;margin:0 4px}}
-body.dark .nb-sep{{background:#334155}}
-.nb-port{{display:inline-flex;align-items:center;gap:4px;padding:2px 8px;border-radius:6px;font-size:.75rem;font-family:'JetBrains Mono',monospace;background:rgba(34,197,94,.1);border:1px solid rgba(34,197,94,.25)}}
-body.dark .nb-port{{background:rgba(34,197,94,.12)}}
-.nb-clickable:hover .nb-val{{text-decoration:underline}}
-.nb-popup{{display:none;position:absolute;top:100%;left:0;margin-top:6px;padding:10px 14px;background:#fff;border:1px solid #e2e8f0;border-radius:10px;box-shadow:0 4px 12px rgba(0,0,0,.12);z-index:100;min-width:120px}}
-body.dark .nb-popup{{background:#1e293b;border-color:#334155}}
-.nb-popup.show{{display:block}}
 .kpi-row{{display:grid;grid-template-columns:repeat(5,1fr);gap:14px;margin-bottom:24px}}
 .kpi{{background:#fff;border:1px solid #e2e8f0;border-radius:14px;padding:20px;box-shadow:0 1px 3px rgba(0,0,0,.06)}}
 body.dark .kpi{{background:#1e293b;border-color:#334155}}
@@ -1404,18 +1460,6 @@ body.dark .li{{color:#94a3b8}}
 .ld{{width:11px;height:11px;border-radius:50%;flex-shrink:0}}
 
 /* ── refresh notice ── */
-.rfx{{display:flex;align-items:center;gap:12px;padding:10px 16px;background:#f0fdf4;border:1px solid #bbf7d0;border-radius:10px;margin-bottom:20px;font-size:.82rem;flex-wrap:wrap}}
-body.dark .rfx{{background:rgba(34,197,94,.07);border-color:rgba(34,197,94,.2)}}
-.rfx-status{{color:#374151;flex:1}}
-body.dark .rfx-status{{color:#94a3b8}}
-.rfx-reload{{font-family:'Inter',sans-serif;font-size:.82rem;font-weight:600;color:#fff;background:#0d9488;border:none;border-radius:8px;padding:6px 16px;cursor:pointer;white-space:nowrap}}
-.rfx-reload:hover{{background:#0f766e}}
-.rfx-hint{{font-size:.75rem;color:#6b7280;white-space:nowrap}}
-body.dark .rfx-hint{{color:#6b7280}}
-.rfx-hint code{{background:rgba(0,0,0,.08);border-radius:4px;padding:1px 5px;font-family:'JetBrains Mono',monospace;font-size:.72rem}}
-body.dark .rfx-hint code{{background:rgba(255,255,255,.08)}}
-
-
 .df-wrap{{display:flex;align-items:center;gap:8px;margin-bottom:20px;flex-wrap:wrap}}
 .df-label{{font-size:.75rem;font-weight:600;color:#64748b;text-transform:uppercase;letter-spacing:.05em;margin-right:4px}}
 body.dark .df-label{{color:#94a3b8}}
@@ -1428,6 +1472,72 @@ body.dark .df-inp{{background:#1e293b;border-color:#334155;color:#e2e8f0}}
 .df-sep{{color:#94a3b8;font-size:.8rem}}
 .df-apply{{font-family:'Inter',sans-serif;font-size:.78rem;font-weight:600;color:#fff;background:#0d9488;border:none;border-radius:8px;padding:6px 14px;cursor:pointer}}
 .df-range{{font-size:.75rem;color:#94a3b8;margin-left:8px}}
+.df-sel{{width:auto !important}}
+
+/* -- consolidated header (Row 1 chips, Row 2 action bar) -- */
+.hdr{{align-items:center}}
+.hdr-right{{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-left:auto}}
+.hdr-title-sub{{color:#64748b;font-weight:500}}
+body.dark .hdr-title-sub{{color:#94a3b8}}
+.info-icon{{display:inline-block;margin-left:6px;color:#94a3b8;cursor:help;font-size:.85em;vertical-align:middle;line-height:1}}
+.info-icon:hover{{color:#0d9488}}
+.info-icon.warn{{color:#ef4444}}
+.info-icon.warn:hover{{color:#dc2626}}
+.chip{{display:inline-flex;align-items:center;gap:5px;padding:3px 10px;border-radius:999px;background:#f1f5f9;border:1px solid #e2e8f0;font-family:'JetBrains Mono',monospace;font-size:.72rem;font-weight:600;color:#475569;white-space:nowrap}}
+body.dark .chip{{background:#1e293b;border-color:#334155;color:#cbd5e1}}
+
+.action-bar{{display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:8px 12px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;margin-bottom:14px;font-size:.8rem}}
+body.dark .action-bar{{background:#1e293b;border-color:#334155}}
+.action-left{{display:flex;align-items:center;gap:8px;flex-wrap:wrap}}
+.action-right{{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-left:auto}}
+
+/* Split button: main action + dropdown caret */
+.split-btn{{position:relative;display:inline-flex;align-items:stretch}}
+.split-main{{font-family:'Inter',sans-serif;font-size:.82rem;font-weight:600;color:#fff;background:#0d9488;border:none;border-radius:8px 0 0 8px;padding:6px 14px;cursor:pointer;white-space:nowrap}}
+.split-main:hover{{background:#0f766e}}
+.split-caret{{font-family:'Inter',sans-serif;font-size:.78rem;color:#fff;background:#0d9488;border:none;border-left:1px solid rgba(255,255,255,.25);border-radius:0 8px 8px 0;padding:6px 9px;cursor:pointer}}
+.split-caret:hover{{background:#0f766e}}
+.split-menu{{display:none;position:absolute;top:100%;left:0;margin-top:4px;min-width:240px;background:#fff;border:1px solid #e2e8f0;border-radius:10px;box-shadow:0 4px 12px rgba(0,0,0,.12);z-index:200;padding:4px;overflow:hidden}}
+body.dark .split-menu{{background:#1e293b;border-color:#334155}}
+.split-menu.show{{display:block}}
+.split-menu-item{{padding:8px 12px;border-radius:6px;cursor:pointer}}
+.split-menu-item:hover{{background:#f1f5f9}}
+body.dark .split-menu-item:hover{{background:#334155}}
+.split-menu-label{{font-size:.85rem;font-weight:600;color:#1e293b}}
+body.dark .split-menu-label{{color:#e2e8f0}}
+.split-menu-sub{{font-size:.72rem;color:#64748b;margin-top:2px}}
+body.dark .split-menu-sub{{color:#94a3b8}}
+
+/* Vitals strip (online / uptime / buffers / nodes / ports-chip) */
+.vitals{{display:flex;align-items:center;gap:14px;flex-wrap:wrap}}
+.vitals-item{{display:inline-flex;align-items:center;gap:5px;font-size:.8rem;color:#475569;white-space:nowrap}}
+body.dark .vitals-item{{color:#cbd5e1}}
+.vitals-item .lbl{{color:#94a3b8;font-size:.72rem;font-weight:600;text-transform:uppercase;letter-spacing:.04em}}
+.vitals-item strong{{font-family:'JetBrains Mono',monospace;font-weight:600;color:#1e293b}}
+body.dark .vitals-item strong{{color:#e2e8f0}}
+.dot{{display:inline-block;width:8px;height:8px;border-radius:50%}}
+.dot-green{{background:#22c55e}}
+.dot-amber{{background:#f59e0b}}
+.dot-red{{background:#ef4444}}
+.dot-gray{{background:#94a3b8}}
+
+/* Ports collapse/expand */
+.ports-chip{{display:inline-flex;align-items:center;gap:4px;padding:3px 10px;border-radius:999px;background:#f1f5f9;border:1px solid #e2e8f0;font-size:.72rem;font-weight:600;color:#475569;cursor:pointer;font-family:inherit}}
+.ports-chip:hover{{background:#e2e8f0}}
+body.dark .ports-chip{{background:#1e293b;border-color:#334155;color:#cbd5e1}}
+body.dark .ports-chip:hover{{background:#334155}}
+.ports-chip .caret{{transition:transform .15s ease-out}}
+.ports-chip[aria-expanded="true"] .caret{{transform:rotate(90deg)}}
+.ports-expanded{{max-height:0;overflow:hidden;transition:max-height .15s ease-out;margin-bottom:0}}
+.ports-expanded.show{{max-height:200px;margin-bottom:14px}}
+.ports-expanded-inner{{display:flex;flex-wrap:wrap;gap:6px;padding:10px 12px;background:#fff;border:1px solid #e2e8f0;border-radius:10px}}
+body.dark .ports-expanded-inner{{background:#1e293b;border-color:#334155}}
+
+/* Status chips on the right (active stations, lists pill) */
+.status-chip{{display:inline-flex;align-items:center;gap:6px;padding:3px 10px;border-radius:999px;font-size:.75rem;font-weight:600;border:1px solid;white-space:nowrap}}
+.status-chip.on{{background:rgba(34,197,94,.12);color:#22c55e;border-color:rgba(34,197,94,.35)}}
+.status-chip.off{{background:#f1f5f9;color:#64748b;border-color:#e2e8f0}}
+body.dark .status-chip.off{{background:#1e293b;color:#94a3b8;border-color:#334155}}
 
 
 /* ── sortable table headers ── */
@@ -1455,56 +1565,19 @@ body.dark .ft{{border-color:#334155}}
   <div class="hdr-left">
     <div class="hdr-icon">📡</div>
     <div>
-      <div class="hdr-title">{HOME_CALL}-8 BBS &amp; Winlink Gateway &nbsp;
-        <span class="accent">Log Analysis</span>
-      </div>
-      <div class="hdr-sub">
-        BPQ32 v6.0.25.1 &nbsp;&middot;&nbsp;
-        <span class="mono">{HOME_CALL} ({HOME_GRID})</span> &nbsp;&middot;&nbsp;
-        {LOCATION} &nbsp;&middot;&nbsp;
-        Operator: <span class="mono">{OP_CALL}</span> (Jason) &nbsp;&middot;&nbsp;
-        {dlabel} &nbsp;&middot;&nbsp; Generated {now}
+      <div class="hdr-title">{HOME_CALL}-8 BBS &amp; Winlink Gateway
+        <span class="hdr-title-sub">· Log Analysis</span>
+        <span class="info-icon" id="info-icon" title="{_info_tooltip}">&#9432;</span>
       </div>
     </div>
   </div>
-  <button class="tog" onclick="toggleTheme()"><span id="ti">🌙</span><span id="tl">Dark mode</span></button>
-</div>
-
-<div class="rfx">
-  <span style="font-size:1.1rem">⟳</span>
-  <span class="rfx-status">Last generated: <strong>{now}</strong></span>
-  <button class="rfx-reload" onclick="location.reload(true)" title="Reload page to pick up newly generated data">
-    ↺ Reload
-  </button>
-  <button class="rfx-reload" id="btn-refresh-lists" onclick="refreshBpqLists()"
-          title="Re-fetch the partner and registered-user lists from BPQ32 (use after adding a new forwarding partner)">
-    ⟳ Refresh Lists
-  </button>
-  {_lists_pill}
-  <span class="rfx-hint">Run <code>refresh.bat</code> first, then click Reload</span>
-</div>
-
-<div class="df-wrap">
-  <span class="df-label">Date range</span>
-  <select class="df-sel" id="df-sel" onchange="applyPreset(this.value)">
-    <option value="all">All data</option>
-    <option value="today" selected>Today</option>
-    <option value="yesterday">Yesterday</option>
-    <option value="week">Last 7 days</option>
-    <option value="month">This month</option>
-    <option value="year">This year</option>
-    <option value="custom">Custom range&hellip;</option>
-  </select>
-  <div class="df-custom" id="df-custom">
-    <input class="df-inp" type="date" id="df-from">
-    <span class="df-sep">to</span>
-    <input class="df-inp" type="date" id="df-to">
-    <button class="df-apply" onclick="applyCustom()">Apply</button>
+  <div class="hdr-right">
+    {_chips_html}
+    <button class="tog" onclick="toggleTheme()"><span id="ti">🌙</span><span id="tl">Dark mode</span></button>
   </div>
-  <span class="df-range" id="df-range"></span>
 </div>
 
-{_node_bar}
+{_action_bar}
 
 <div class="kpi-row">
   <div class="kpi kpi-green">
@@ -2038,28 +2111,98 @@ function toggleTheme(){{
   tl=L.tileLayer(isDark?TDARK:TLIGHT,TOPTS).addTo(map);
 }}
 
-// ── Manual refresh of BPQ partner + user lists ────────────────────────────────
-async function refreshBpqLists(){{
-  const btn = document.getElementById('btn-refresh-lists');
-  if(!btn) return;
-  const orig = btn.innerHTML;
-  btn.disabled = true;
-  btn.innerHTML = '⟳ Refreshing...';
+// ── Header split button: fast rebuild vs slow re-fetch ───────────────────────
+async function splitDoFast(){{
+  // Fast path: POST /api/rebuild (server runs bpq_dashboard.py against the
+  // cached partner/user lists), then reload to pick up the freshly-generated
+  // HTML. Forces a rebuild even when logs haven't changed.
+  splitCloseMenu();
+  const main = document.querySelector('.split-main');
+  const orig = main ? main.innerHTML : null;
+  if(main){{ main.disabled = true; main.innerHTML = '⟳ Rebuilding...'; }}
   try{{
-    const r = await fetch('/api/refresh-lists', {{method:'POST'}});
+    const r = await fetch('/api/rebuild', {{method:'POST'}});
     if(r.ok){{
-      btn.innerHTML = '✓ Lists invalidated, rebuilding...';
-      // Auto-reload poller will pick up the new dashboard within a few seconds
-      setTimeout(()=>{{ btn.innerHTML = orig; btn.disabled = false; }}, 8000);
-    }}else{{
-      btn.innerHTML = '✗ Failed';
-      setTimeout(()=>{{ btn.innerHTML = orig; btn.disabled = false; }}, 3000);
+      location.reload();
+    }}else if(main){{
+      main.innerHTML = '✗ Rebuild failed';
+      setTimeout(()=>{{ main.innerHTML = orig; main.disabled = false; }}, 3000);
     }}
   }}catch(e){{
-    btn.innerHTML = '✗ Server unreachable';
-    setTimeout(()=>{{ btn.innerHTML = orig; btn.disabled = false; }}, 3000);
+    if(main){{
+      main.innerHTML = '✗ Server unreachable';
+      setTimeout(()=>{{ main.innerHTML = orig; main.disabled = false; }}, 3000);
+    }}
   }}
 }}
+
+async function splitDoSlow(){{
+  splitCloseMenu();
+  const main = document.querySelector('.split-main');
+  const orig = main ? main.innerHTML : null;
+  if(main){{ main.disabled = true; main.innerHTML = '⟳ Re-fetching...'; }}
+  try{{
+    const r = await fetch('/api/refresh-lists', {{method:'POST'}});
+    if(r.ok && main){{
+      main.innerHTML = '✓ Lists invalidated, rebuilding...';
+      setTimeout(()=>{{ main.innerHTML = orig; main.disabled = false; }}, 8000);
+    }}else if(main){{
+      main.innerHTML = '✗ Failed';
+      setTimeout(()=>{{ main.innerHTML = orig; main.disabled = false; }}, 3000);
+    }}
+  }}catch(e){{
+    if(main){{
+      main.innerHTML = '✗ Server unreachable';
+      setTimeout(()=>{{ main.innerHTML = orig; main.disabled = false; }}, 3000);
+    }}
+  }}
+}}
+
+function splitToggleMenu(e){{
+  if(e) e.stopPropagation();
+  const m = document.getElementById('split-menu');
+  const c = document.getElementById('split-caret');
+  if(!m||!c) return;
+  const open = m.classList.toggle('show');
+  c.setAttribute('aria-expanded', open ? 'true' : 'false');
+}}
+
+function splitCloseMenu(){{
+  const m = document.getElementById('split-menu');
+  const c = document.getElementById('split-caret');
+  if(m) m.classList.remove('show');
+  if(c) c.setAttribute('aria-expanded', 'false');
+}}
+
+// Close split menu on outside click or Esc
+document.addEventListener('click', e => {{
+  const m = document.getElementById('split-menu');
+  if(!m || !m.classList.contains('show')) return;
+  if(e.target.closest('.split-btn')) return;
+  splitCloseMenu();
+}});
+document.addEventListener('keydown', e => {{
+  if(e.key === 'Escape') splitCloseMenu();
+}});
+
+// ── Ports chip expand/collapse ───────────────────────────────────────────────
+function togglePorts(){{
+  const chip = document.getElementById('ports-chip');
+  const exp  = document.getElementById('ports-expanded');
+  if(!chip || !exp) return;
+  const open = exp.classList.toggle('show');
+  chip.setAttribute('aria-expanded', open ? 'true' : 'false');
+}}
+document.addEventListener('keydown', e => {{
+  if(e.key === 'Escape'){{
+    const exp = document.getElementById('ports-expanded');
+    if(exp && exp.classList.contains('show')){{
+      exp.classList.remove('show');
+      const chip = document.getElementById('ports-chip');
+      if(chip) chip.setAttribute('aria-expanded','false');
+    }}
+  }}
+}});
 
 // ── Email edit modal ──────────────────────────────────────────────────────────
 const API = 'http://127.0.0.1:5999';
@@ -2115,17 +2258,32 @@ applyPreset('today');
 // ── Auto-reload when dashboard server detects new log data ───────────────────
 (function(){{
   let knownTs=0;
+  // Base info-tooltip text (rendered by Python) — auto-refresh status is appended.
+  const infoEl = document.getElementById('info-icon');
+  const baseTip = infoEl ? (infoEl.getAttribute('title') || '') : '';
+  function setInfo(state){{
+    if(!infoEl) return;
+    if(state === 'active'){{
+      infoEl.classList.remove('warn');
+      infoEl.setAttribute('title', baseTip + ' · Auto-refresh active');
+      infoEl.innerHTML = '&#9432;';  // ⓘ
+    }}else{{
+      infoEl.classList.add('warn');
+      infoEl.setAttribute('title', 'Auto-refresh stopped · ' + baseTip);
+      infoEl.innerHTML = '&#9888;';  // ⚠
+    }}
+  }}
   async function poll(){{
     try{{
       const r=await fetch('/api/last-refresh?_='+Date.now());
-      if(!r.ok) return;
+      if(!r.ok){{ setInfo('stopped'); return; }}
       const d=await r.json();
       if(knownTs&&d.ts>knownTs) location.reload();
       knownTs=d.ts;
-      const h=document.querySelector('.rfx-hint');
-      if(h) h.innerHTML='Auto-refresh active &mdash; watching logs';
+      setInfo('active');
     }}catch(e){{
-      // Server not reachable (file opened directly) — silently ignore
+      // Server not reachable (file opened directly, or server down)
+      setInfo('stopped');
     }}
   }}
   poll();

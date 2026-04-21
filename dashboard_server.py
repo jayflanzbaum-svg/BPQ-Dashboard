@@ -170,6 +170,17 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(200, json.dumps({"ok": True, "msg": "lists invalidated; rebuilding"}).encode())
             except Exception as e:
                 self._send(500, json.dumps({"error": str(e)}).encode())
+        elif path == "/api/rebuild":
+            # Synchronous rebuild — runs bpq_dashboard.py and returns when complete.
+            # Wired to the split button's "Refresh" action so the user always
+            # sees a freshly-generated dashboard, not whatever the watcher last
+            # produced.
+            print(f"  Manual rebuild requested...")
+            try:
+                _trigger_rebuild()
+                self._send(200, json.dumps({"ok": True, "msg": "rebuild complete"}).encode())
+            except Exception as e:
+                self._send(500, json.dumps({"error": str(e)}).encode())
         else:
             self._send(404, b'{"error":"not found"}')
 
