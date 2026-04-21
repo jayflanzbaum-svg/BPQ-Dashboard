@@ -4,6 +4,8 @@ Analytics dashboard for BPQ32 packet radio BBS and Winlink gateway nodes.
 
 Parses BPQ32 log files, fetches live data from the BPQ32 web interface, and generates a standalone HTML dashboard with an interactive map, KPI cards, date filtering, and sortable detail tables.
 
+![BPQ-Dashboard screenshot](docs/screenshot.jpg)
+
 ## Features
 
 - **Station map** — Leaflet map with markers for Guest BBS users, Partner BBS users, and Winlink Gateway users. Locations resolved via QRZ XML API with Maidenhead grid fallback.
