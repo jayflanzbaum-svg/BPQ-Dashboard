@@ -1400,6 +1400,10 @@ body.dark .ft{{border-color:#334155}}
   <button class="rfx-reload" onclick="location.reload(true)" title="Reload page to pick up newly generated data">
     ↺ Reload
   </button>
+  <button class="rfx-reload" id="btn-refresh-lists" onclick="refreshBpqLists()"
+          title="Re-fetch the partner and registered-user lists from BPQ32 (use after adding a new forwarding partner)">
+    ⟳ Refresh Lists
+  </button>
   <span class="rfx-hint">Run <code>refresh.bat</code> first, then click Reload</span>
 </div>
 
@@ -1957,6 +1961,29 @@ function toggleTheme(){{
   tl=L.tileLayer(isDark?TDARK:TLIGHT,TOPTS).addTo(map);
 }}
 
+// ── Manual refresh of BPQ partner + user lists ────────────────────────────────
+async function refreshBpqLists(){{
+  const btn = document.getElementById('btn-refresh-lists');
+  if(!btn) return;
+  const orig = btn.innerHTML;
+  btn.disabled = true;
+  btn.innerHTML = '⟳ Refreshing...';
+  try{{
+    const r = await fetch('/api/refresh-lists', {{method:'POST'}});
+    if(r.ok){{
+      btn.innerHTML = '✓ Lists invalidated, rebuilding...';
+      // Auto-reload poller will pick up the new dashboard within a few seconds
+      setTimeout(()=>{{ btn.innerHTML = orig; btn.disabled = false; }}, 8000);
+    }}else{{
+      btn.innerHTML = '✗ Failed';
+      setTimeout(()=>{{ btn.innerHTML = orig; btn.disabled = false; }}, 3000);
+    }}
+  }}catch(e){{
+    btn.innerHTML = '✗ Server unreachable';
+    setTimeout(()=>{{ btn.innerHTML = orig; btn.disabled = false; }}, 3000);
+  }}
+}}
+
 // ── Email edit modal ──────────────────────────────────────────────────────────
 const API = 'http://127.0.0.1:5999';
 let _emailCall = '';
@@ -2115,141 +2142,197 @@ def load_email_overrides(script_dir: Path) -> dict:
     return overrides
 
 
-def fetch_bbs_users(host: str = "127.0.0.1", port: int = 8010, token: str = "") -> dict:
-    """Fetch BBS user list from BPQ32 web interface AJAX endpoint."""
-    import urllib.request, urllib.parse as _up, re as _re
-    results = {}
-    valid = _re.compile(r"^[A-Z0-9]{1,3}[0-9][A-Z]{1,4}(-\d+)?$")
-
-    def _post(path, data=b""):
-        url = f"http://{host}:{port}/{path}"
-        try:
-            req = urllib.request.Request(url, data=data, method="POST")
-            with urllib.request.urlopen(req, timeout=3) as r:
-                return r.read().decode("utf-8", errors="replace")
-        except Exception:
-            return None
-
-    def _get(path):
-        url = f"http://{host}:{port}/{path}"
-        try:
-            with urllib.request.urlopen(url, timeout=3) as r:
-                return r.read().decode("utf-8", errors="replace")
-        except Exception:
-            return None
-
-    # BPQ32 AJAX endpoints — UserList.txt returns pipe-separated callsigns
-    # First try the session-establishing approach (GET parent page, then POST AJAX)
-    tok = token or ""
-    raw = None
-    if tok:
-        try:
-            text = _bpq_session_get(host, port, tok,
-                                    f"/Mail/Users?{tok}",
-                                    f"/Mail/UserList.txt?{tok}")
-            if text and "Session had been lost" not in text and "Sorry" not in text[:200]:
-                tokens = [t.strip() for t in text.replace('\r','').replace('\n','|').split('|') if t.strip()]
-                calls = [t.upper() for t in tokens if valid.match(t.upper())]
-                if calls:
-                    raw = calls
-                    print(f"  BPQ32 user list (session): {len(calls)} users")
-        except Exception:
-            pass
-
-    candidates = [
-        f"Mail/UserList.txt?{tok}",
-        f"Mail/UserList?{tok}",
-        f"Mail/GetData?{tok}",
-        f"Mail/GetUsers?{tok}",
-    ]
-    for path in candidates:
-        if raw:
-            break
-        text = _post(path) or _get(path)
-        if text:
-            # BPQ32 returns pipe-separated values (CALL1|CALL2|CALL3|)
-            tokens = [t.strip() for t in text.replace('\r','').replace('\n','|').split('|') if t.strip()]
-            calls = [t.upper() for t in tokens if valid.match(t.upper())]
-            if calls:
-                raw = calls
-                print(f"  BPQ32 user list from: {path} ({len(calls)} users)")
-                break
-            # Alternatively try parsing as HTML table
-            if "<table" in text.lower() and "<td" in text.lower():
-                raw_html = text
-                row_re  = _re.compile(r"<tr[^>]*>(.*?)</tr>", _re.I | _re.S)
-                cell_re = _re.compile(r"<td[^>]*>(.*?)</td>", _re.I | _re.S)
-                tag_re  = _re.compile(r"<[^>]+>")
-                for row in row_re.finditer(raw_html):
-                    cells = [tag_re.sub("", c.group(1)).strip()
-                             for c in cell_re.finditer(row.group(1))]
-                    if cells and valid.match(cells[0].upper()):
-                        raw = raw or []
-                        raw.append(cells[0].upper())
-                if raw:
-                    print(f"  BPQ32 user list (HTML) from: {path}")
-                    break
-
-    if not raw:
-        print(f"  BPQ32 web interface: no user list found (manual bbs_users.txt is the fallback)")
-        return results
-
-    for call in raw:
-        call = call.upper()
-        if valid.match(call):
-            results[call] = {"last_connect": "", "last_iso": "", "home_bbs": "", "name": ""}
-
-    # Optionally fetch details for each user from UserDetails endpoint
-    # (skip to avoid N slow requests — manual file covers the important ones)
-    print(f"  BPQ32 BBS users fetched: {len(results)}")
-    return results
+_BPQ_KEY_RE   = re.compile(r'/Mail/[A-Za-z]+\?(M[0-9A-Fa-f]+)')
+_BPQ_LOGIN_RE = re.compile(r'type\s*=\s*["\']?password["\']?', re.IGNORECASE)
+_CALL_RE      = re.compile(r"^[A-Z0-9]{1,3}[0-9][A-Z]{1,4}(-\d+)?$")
 
 
-def _bpq_session_get(host: str, port: int, token: str, parent_path: str, ajax_path: str):
-    """Establish a BPQ32 web session by GETting the parent page first,
-    then POST the AJAX endpoint within the same session (cookies preserved)."""
-    import urllib.request, http.cookiejar
-    cj = http.cookiejar.CookieJar()
-    opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(cj))
-    # First request: GET the parent page to establish/refresh the session
-    parent_url = f"http://{host}:{port}{parent_path}"
+def _log_fetch(script_dir: Path, msg: str) -> None:
+    """Append a timestamped entry to bpq_lists_fetch.log."""
     try:
-        opener.open(parent_url, timeout=3).read()
+        with open(script_dir / "bpq_lists_fetch.log", "a", encoding="utf-8") as f:
+            f.write(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {msg}\n")
     except Exception:
         pass
-    # Second request: POST the AJAX endpoint with cookies from the first
-    ajax_url = f"http://{host}:{port}{ajax_path}"
-    req = urllib.request.Request(ajax_url, data=b"", method="POST")
-    with opener.open(req, timeout=3) as r:
-        return r.read().decode("utf-8", errors="replace")
 
 
-def fetch_fwd_partners(host: str = "127.0.0.1", port: int = 8010, token: str = "") -> set:
-    """Fetch the configured forwarding partners from BPQ32 web interface.
-    Returns a set of base callsigns (SSID stripped)."""
-    import re as _re
-    valid = _re.compile(r"^[A-Z0-9]{1,3}[0-9][A-Z]{1,4}(-\d+)?$")
-    partners = set()
-    if not token:
-        print("  Forwarding partners: no token configured, skipping")
-        return partners
+def _bpq_make_opener(host: str, port: int, sysop_user: str, sysop_pass: str):
+    """Build an HTTP opener with Basic Auth + cookie jar for the BPQ32 web interface."""
+    import urllib.request, http.cookiejar
+    pwmgr = urllib.request.HTTPPasswordMgrWithDefaultRealm()
+    pwmgr.add_password(None, f"http://{host}:{port}/", sysop_user, sysop_pass)
+    auth   = urllib.request.HTTPBasicAuthHandler(pwmgr)
+    cookie = urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar())
+    return urllib.request.build_opener(auth, cookie)
+
+
+def _bpq_detect_key(opener, host: str, port: int) -> str:
+    """Auto-detect the rotating BPQ session KEY by hitting Mail entry pages."""
+    last = None
+    for path in ("/Mail/Header", "/Mail/Status", "/Mail/Users"):
+        try:
+            with opener.open(f"http://{host}:{port}{path}", timeout=5) as r:
+                final_url = r.geturl()
+                html = r.read().decode("utf-8", errors="replace")
+        except Exception as e:
+            last = f"{path}: {e}"
+            continue
+        if _BPQ_LOGIN_RE.search(html):
+            raise RuntimeError(
+                "BPQ returned a login page — sysop credentials likely wrong "
+                "(check USER= line in bpq32.cfg Telnet port block)"
+            )
+        m = _BPQ_KEY_RE.search(final_url) or _BPQ_KEY_RE.search(html)
+        if m:
+            return m.group(1)
+        last = f"{path}: no KEY found"
+    raise RuntimeError(f"could not detect BPQ session key ({last})")
+
+
+def fetch_bpq_lists(script_dir: Path,
+                    host: str = "127.0.0.1", port: int = 8010,
+                    sysop_user: str = "", sysop_pass: str = "",
+                    cache_ttl: int = 3600,
+                    force_refresh: bool = False) -> dict:
+    """Fetch FwdList (partners) and UserList (registered users) from BPQ32.
+
+    Caches result to bpq_lists_cache.json with timestamp; refreshes if older
+    than cache_ttl seconds (default 1 hour) or if force_refresh=True. Falls
+    back to stale cache if a live fetch fails. Logs every attempt to
+    bpq_lists_fetch.log.
+
+    Returns: {'partners': set, 'users': set, 'fetched_at': float, 'source': str}
+    where source is one of: 'cache', 'live', 'stale-cache', 'none'.
+    """
+    import urllib.request, json as _json
+    cache_path = script_dir / "bpq_lists_cache.json"
+    now = time.time()
+
+    # 1. Try fresh cache
+    if not force_refresh and cache_path.exists():
+        try:
+            with open(cache_path, encoding="utf-8") as f:
+                cache = _json.load(f)
+            age = now - float(cache.get("fetched_at", 0))
+            if age < cache_ttl:
+                _log_fetch(script_dir, f"cache hit (age {int(age)}s, partners={len(cache.get('partners',[]))}, users={len(cache.get('users',[]))})")
+                return {
+                    "partners":   set(cache.get("partners", [])),
+                    "users":      set(cache.get("users", [])),
+                    "fetched_at": float(cache.get("fetched_at", 0)),
+                    "source":     "cache",
+                }
+        except Exception as e:
+            _log_fetch(script_dir, f"cache read failed: {e}")
+
+    # 2. Live fetch — needs sysop credentials
+    if not sysop_user or not sysop_pass:
+        _log_fetch(script_dir, "live fetch skipped: no sysop credentials configured")
+        print("  BPQ lists: no sysop credentials in [sysop] section of bpq_dashboard.cfg, skipping")
+        return _bpq_stale_or_empty(script_dir, cache_path)
+
     try:
-        text = _bpq_session_get(host, port, token,
-                                f"/Mail/FWD?{token}",
-                                f"/Mail/FwdList.txt?{token}")
+        opener = _bpq_make_opener(host, port, sysop_user, sysop_pass)
+        key    = _bpq_detect_key(opener, host, port)
     except Exception as e:
-        print(f"  Forwarding partners fetch failed: {e}")
-        return partners
-    if "Session had been lost" in text or "Sorry" in text[:200]:
-        print(f"  Forwarding partners: session lost — token may be stale")
-        print(f"  Raw response (first 200 chars): {text[:200]!r}")
-        return partners
-    tokens = [t.strip() for t in text.replace('\r','').replace('\n','|').split('|') if t.strip()]
-    for t in tokens:
-        if valid.match(t.upper()):
-            partners.add(strip_ssid(t.upper()))
-    print(f"  Forwarding partners: {sorted(partners)}")
-    return partners
+        _log_fetch(script_dir, f"live fetch failed at auth/key step: {e}")
+        print(f"  BPQ lists: auth/key detection failed — {e}")
+        return _bpq_stale_or_empty(script_dir, cache_path)
+
+    def _ajax(parent_path: str, ajax_path: str) -> str:
+        # Open the parent page first to establish the session, then POST the AJAX endpoint.
+        try:
+            opener.open(f"http://{host}:{port}{parent_path}?{key}", timeout=5).read()
+        except Exception:
+            pass
+        req = urllib.request.Request(f"http://{host}:{port}{ajax_path}?{key}", data=b"", method="POST")
+        with opener.open(req, timeout=5) as r:
+            return r.read().decode("utf-8", errors="replace")
+
+    partners, users = set(), set()
+    try:
+        for tok in _ajax("/Mail/FWD", "/Mail/FwdList.txt").replace('\r','').replace('\n','|').split('|'):
+            tok = tok.strip().upper()
+            if _CALL_RE.match(tok):
+                partners.add(strip_ssid(tok))
+    except Exception as e:
+        _log_fetch(script_dir, f"FwdList fetch failed: {e}")
+        print(f"  BPQ FwdList fetch failed: {e}")
+    try:
+        for tok in _ajax("/Mail/Users", "/Mail/UserList.txt").replace('\r','').replace('\n','|').split('|'):
+            tok = tok.strip().upper()
+            if _CALL_RE.match(tok):
+                users.add(strip_ssid(tok))
+    except Exception as e:
+        _log_fetch(script_dir, f"UserList fetch failed: {e}")
+        print(f"  BPQ UserList fetch failed: {e}")
+
+    if not partners and not users:
+        _log_fetch(script_dir, "live fetch returned no data")
+        return _bpq_stale_or_empty(script_dir, cache_path)
+
+    # 3. Persist cache
+    try:
+        with open(cache_path, "w", encoding="utf-8") as f:
+            _json.dump({"partners": sorted(partners), "users": sorted(users),
+                        "fetched_at": now}, f, indent=2)
+    except Exception as e:
+        _log_fetch(script_dir, f"cache write failed: {e}")
+
+    _log_fetch(script_dir, f"live fetch ok: partners={len(partners)} users={len(users)}")
+    print(f"  BPQ lists (live): partners={len(partners)}, users={len(users)}")
+    return {"partners": partners, "users": users, "fetched_at": now, "source": "live"}
+
+
+def _bpq_stale_or_empty(script_dir: Path, cache_path: Path) -> dict:
+    """Return stale cache contents if available, else an empty result."""
+    import json as _json
+    if cache_path.exists():
+        try:
+            with open(cache_path, encoding="utf-8") as f:
+                cache = _json.load(f)
+            _log_fetch(script_dir, "falling back to stale cache")
+            return {
+                "partners":   set(cache.get("partners", [])),
+                "users":      set(cache.get("users", [])),
+                "fetched_at": float(cache.get("fetched_at", 0)),
+                "source":     "stale-cache",
+            }
+        except Exception:
+            pass
+    return {"partners": set(), "users": set(), "fetched_at": 0, "source": "none"}
+
+
+def classify_call(call: str, partners: set, users: set,
+                  self_calls: set, system_calls: set) -> str:
+    """Classify a callsign into one of 6 buckets based on the SSID-stripped base.
+
+    Order of precedence (first match wins):
+      self     — base in self_calls (your own callsigns: N4SFL, N8FLA, ...)
+      rms      — base == 'RMS' (Winlink RMS pseudonym)
+      system   — base in system_calls (SWITCH, etc.)
+      partner  — base in partners (configured forwarding peer in /Mail/FWD)
+      user     — base in users (registered BBS user in /Mail/Users)
+      external — none of the above (transient connect / unknown sender)
+    """
+    base = strip_ssid(call.upper())
+    if base in self_calls:    return "self"
+    if base == "RMS":         return "rms"
+    if base in system_calls:  return "system"
+    if base in partners:      return "partner"
+    if base in users:         return "user"
+    return "external"
+
+
+# Backward-compatibility shims (so existing code keeps working).
+# These now delegate to fetch_bpq_lists when invoked directly with no script_dir,
+# but the main flow calls fetch_bpq_lists() once and passes data through explicitly.
+def fetch_fwd_partners(host: str = "127.0.0.1", port: int = 8010, token: str = "") -> set:
+    return set()
+
+
+def fetch_bbs_users(host: str = "127.0.0.1", port: int = 8010, token: str = "") -> dict:
+    return {}
 
 
 def fetch_node_stats(host: str = "127.0.0.1", port: int = 8010) -> dict:
@@ -2556,6 +2639,9 @@ def main():
     script_dir = Path(__file__).parent
     cfg_path   = script_dir / "bpq_dashboard.cfg"
     cfg_user, cfg_pass, cfg_token, cfg_manual_users = "", "", "", []
+    cfg_sysop_user, cfg_sysop_pass = "", ""
+    cfg_self_calls   = {HOME_CALL.upper(), OP_CALL.upper()}  # default: dashboard's own calls
+    cfg_system_calls = {"SWITCH"}                             # default: known internal pseudonyms
     if os.path.exists(cfg_path):
         cfg = configparser.ConfigParser()
         cfg.read(cfg_path)
@@ -2566,6 +2652,18 @@ def main():
         cfg_manual_users = [c.strip().upper() for c in
                             cfg.get("bbs_users", "calls", fallback="").split(",")
                             if c.strip()]
+        # Sysop credentials for BPQ32 web interface (HTTP Basic Auth)
+        cfg_sysop_user = cfg.get("sysop", "username", fallback="")
+        cfg_sysop_pass = cfg.get("sysop", "password", fallback="")
+        # Classification overrides — comma-separated, applied via classify_call()
+        more_self = [c.strip().upper() for c in
+                     cfg.get("classification", "self_calls", fallback="").split(",") if c.strip()]
+        if more_self:
+            cfg_self_calls = set(more_self)
+        more_sys = [c.strip().upper() for c in
+                    cfg.get("classification", "system_calls", fallback="").split(",") if c.strip()]
+        if more_sys:
+            cfg_system_calls = set(more_sys)
 
     parser = argparse.ArgumentParser(description="BPQ32 log dashboard with QRZ callsign lookup")
     parser.add_argument("--days", type=int, default=DAYS_BACK,
@@ -2634,20 +2732,25 @@ def main():
     known_before = set(r[0] for r in db_conn.execute("SELECT call FROM bbs_callers WHERE is_partner=0"))
     db_load(db_conn, s)
 
-    # Supplement with full BBS user list from BPQ32 web interface
-    # This captures historical users whose log files no longer exist on disk
-    print("\nFetching BBS user list from BPQ32...")
-    bbs_web_users = fetch_bbs_users(token=bpq_token)
-    if bbs_web_users:
-        print(f"  Web users found: {sorted(bbs_web_users.keys())}")
+    # Fetch authoritative partner + user lists from BPQ32 web interface
+    # (uses sysop credentials + cookie session; cached on disk for 1 hour)
+    print("\nFetching BPQ32 partner + user lists...")
+    bpq_lists = fetch_bpq_lists(script_dir,
+                                sysop_user=cfg_sysop_user,
+                                sysop_pass=cfg_sysop_pass)
+    fwd_partners = bpq_lists["partners"]
+    bpq_users    = bpq_lists["users"]
+    print(f"  Source: {bpq_lists['source']}  partners={len(fwd_partners)}  users={len(bpq_users)}")
 
-    # Fetch authoritative forwarding partner list — overrides B2-protocol inference
-    print("\nFetching forwarding partner list from BPQ32...")
-    fwd_partners = fetch_fwd_partners(token=bpq_token)
+    # Replace the B2-inferred partner set with the authoritative configured list.
+    # Anyone who connects but isn't a configured partner is a Guest, even if they used B2.
     if fwd_partners:
-        # Replace the B2-inferred set with the authoritative configured-partner set.
-        # Anyone who connects but isn't in this list is a Guest, even if they used B2.
-        s.inbound_b2_calls = {strip_ssid(c) for c in fwd_partners}
+        s.inbound_b2_calls = set(fwd_partners)
+
+    # Build a synthetic bbs_web_users dict from the fetched user list so the
+    # downstream merge code (which seeds s.bbs_callers from this dict) keeps working.
+    bbs_web_users = {call: {"last_connect": "", "last_iso": "", "home_bbs": "", "name": ""}
+                     for call in bpq_users}
 
     # Merge manually specified users from bbs_users.txt
     manual_users = load_manual_bbs_users(script_dir)
@@ -2690,6 +2793,18 @@ def main():
             del d[k]
             if bad:
                 print(f"  Removed invalid callsign(s): {bad}")
+
+    # Filter out self/rms/system callsigns from the BBS table — these are not
+    # real BBS users (they're our own callsigns or BPQ-internal pseudonyms).
+    _filtered_out = []
+    for call in list(s.bbs_callers.keys()):
+        bucket = classify_call(call, fwd_partners, bpq_users,
+                               cfg_self_calls, cfg_system_calls)
+        if bucket in ("self", "rms", "system"):
+            del s.bbs_callers[call]
+            _filtered_out.append(f"{call}({bucket})")
+    if _filtered_out:
+        print(f"  Filtered out {len(_filtered_out)} non-user callsign(s): {_filtered_out}")
 
     # Detect new guest BBS users (not seen in any previous run)
     for call in list(s.bbs_callers.keys()):

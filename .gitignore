@@ -1,6 +1,12 @@
 # Credentials and local config
 bpq_dashboard.cfg
 qrz_cache.json
+bpq_lists_cache.json
+bpq_lists_fetch.log
+raw_fwd.html
+raw_users.html
+raw_fwdlist.txt
+raw_userlist.txt
 
 # Generated output
 N4SFL_Dashboard.html

@@ -37,6 +37,24 @@ def _log_newest_mtime(log_dir):
     return newest
 
 
+def _trigger_rebuild():
+    """Run bpq_dashboard.py once and update the last-refresh timestamp on success.
+    Used by the manual /api/refresh-lists endpoint to skip the watcher poll wait."""
+    global _last_refresh_ts
+    try:
+        r = subprocess.run(
+            [sys.executable, str(SCRIPT_DIR / "bpq_dashboard.py")],
+            cwd=str(SCRIPT_DIR),
+            capture_output=True, text=True, timeout=300)
+        if r.returncode == 0:
+            _last_refresh_ts = time.time()
+            print(f"  Manual rebuild done at {time.strftime('%H:%M:%S')}")
+        else:
+            print(f"  Manual rebuild failed: {r.stderr[:500]}")
+    except Exception as e:
+        print(f"  Manual rebuild error: {e}")
+
+
 def _watcher(log_dir):
     """Background thread: poll log directory and rebuild dashboard on changes."""
     global _last_refresh_ts
@@ -124,7 +142,8 @@ class Handler(BaseHTTPRequestHandler):
             self._send(404, b'{"error":"not found"}')
 
     def do_POST(self):
-        if urlparse(self.path).path == "/api/email":
+        path = urlparse(self.path).path
+        if path == "/api/email":
             body = self.rfile.read(int(self.headers.get("Content-Length", 0)))
             try:
                 data  = json.loads(body)
@@ -136,6 +155,19 @@ class Handler(BaseHTTPRequestHandler):
                 else:     db_delete_email(call)
                 print(f"  {'Saved' if email else 'Removed'}: {call} → {email}")
                 self._send(200, json.dumps({"ok": True, "call": call, "email": email}).encode())
+            except Exception as e:
+                self._send(500, json.dumps({"error": str(e)}).encode())
+        elif path == "/api/refresh-lists":
+            # Invalidate the cached partner/user lists and trigger a dashboard rebuild.
+            # Next bpq_dashboard.py run will do a live fetch (no cache file → live fetch).
+            cache_file = SCRIPT_DIR / "bpq_lists_cache.json"
+            try:
+                if cache_file.exists():
+                    cache_file.unlink()
+                print(f"  Manual list refresh requested — cache invalidated, rebuilding...")
+                # Trigger a rebuild in the same process (don't wait for the watcher poll)
+                threading.Thread(target=_trigger_rebuild, daemon=True).start()
+                self._send(200, json.dumps({"ok": True, "msg": "lists invalidated; rebuilding"}).encode())
             except Exception as e:
                 self._send(500, json.dumps({"error": str(e)}).encode())
         else:
