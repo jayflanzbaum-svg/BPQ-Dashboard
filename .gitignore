@@ -3,6 +3,9 @@ bpq_dashboard.cfg
 qrz_cache.json
 bpq_lists_cache.json
 bpq_lists_fetch.log
+bpq_node_state.json
+bpq_reachability.log
+bpq_notifications.log
 raw_fwd.html
 raw_users.html
 raw_fwdlist.txt

@@ -28,6 +28,8 @@ Parses BPQ32 log files, fetches live data from the BPQ32 web interface, and gene
 
 ## Quick start
 
+1. Copy `bpq_dashboard.cfg.example` to `bpq_dashboard.cfg` and fill in your values.
+
 **First run** (saves QRZ credentials):
 ```
 cd Dashboard

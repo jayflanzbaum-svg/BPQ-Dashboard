@@ -19,7 +19,7 @@ Requirements: Python 3.8+, no pip installs needed.
 
 import os, re, sys, glob, json, time, argparse, configparser
 import xml.etree.ElementTree as ET
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from collections import defaultdict
 from pathlib import Path
 from urllib.request import urlopen, Request
@@ -313,7 +313,15 @@ GRID_RE = re.compile(r"\(([A-R]{2}\d{2}(?:[A-X]{2})?)\)", re.IGNORECASE)
 
 
 def fmt_time_12h(t: str) -> str:
-    """Convert HH:MM:SS 24h to h:MM AM/PM local."""
+    """Convert an HH:MM:SS string to h:MM AM/PM. NOTE: this is a pure string
+    reformatter — it does NOT do timezone conversion. Callers are responsible
+    for ensuring `t` is already in the desired (local) timezone before calling.
+    BPQ32 writes its DEBUG/BBS log timestamps in UTC; if you pass a raw log
+    time here you will display the wrong wall-clock time. See parse_debug()
+    for the canonical UTC->local conversion. The UTC-source assumption was
+    verified empirically on N4SFL's 6.0.25.1 install (April 2026); other
+    sysops should re-verify before sharing this dashboard widely, since BPQ32
+    has no LOGTIMEZONE/LOGTIME directive (timezone is hardwired)."""
     try:
         h, m, s = t.split(":")
         h = int(h)
@@ -326,6 +334,14 @@ def fmt_time_12h(t: str) -> str:
 
 def parse_debug(files, s: Stats):
     # Line format in DEBUG log: YYMMDD HH:MM:SS ! Program Starting
+    #
+    # BPQ32 writes DEBUG log timestamps in UTC (verified by comparing MiniDump
+    # filenames vs OS mtimes — every dump is exactly 4 hours ahead of mtime
+    # during EDT, matching UTC-EDT offset). BPQ32 has no LOGTIMEZONE directive,
+    # so this is hardwired. We convert UTC -> local before display. NOTE: when
+    # the converted time crosses midnight, the local DATE may differ from the
+    # date embedded in the log filename — we use the post-conversion local
+    # date for both the ISO field and the dt_label so they stay consistent.
     time_re = re.compile(r"^(\d{6})\s+(\d{2}:\d{2}:\d{2})")
     first_start_seen = False
     for fp in sorted(files):   # chronological order
@@ -336,9 +352,17 @@ def parse_debug(files, s: Stats):
                 s.crashes += 1
                 tm = time_re.match(line)
                 time_str = tm.group(2) if tm else "00:00:00"
+                # Use the date from the log line itself if present (in case the
+                # crash spans across multiple files), else fall back to filename.
+                line_date = tm.group(1) if tm else file_date
                 try:
-                    iso = datetime.strptime("20" + file_date, "%Y%m%d").strftime("%Y-%m-%d")
-                    dt_label = f"{iso} at {fmt_time_12h(time_str)} (local)"
+                    naive_utc = datetime.strptime("20" + line_date + " " + time_str,
+                                                  "%Y%m%d %H:%M:%S")
+                    aware_utc = naive_utc.replace(tzinfo=timezone.utc)
+                    local     = aware_utc.astimezone()
+                    iso       = local.strftime("%Y-%m-%d")
+                    pretty    = local.strftime("%I:%M %p").lstrip("0")
+                    dt_label  = f"{iso} at {pretty} (local)"
                     if not first_start_seen:
                         first_start_seen = True
                         s.crash_dates.append({"iso": iso, "dt": dt_label, "startup": True})
@@ -744,7 +768,8 @@ def _station_type(base: str, s: Stats) -> str:
 def build_html(s: Stats, geo: dict, days: int, email_overrides: dict = None,
                node_stats: dict = None, node_ports: list = None,
                node_users: list = None,
-               lists_meta: dict = None) -> str:
+               lists_meta: dict = None,
+               node_state: dict = None) -> str:
     if email_overrides is None:
         email_overrides = {}
     if node_stats is None:
@@ -756,6 +781,10 @@ def build_html(s: Stats, geo: dict, days: int, email_overrides: dict = None,
     if lists_meta is None:
         lists_meta = {"source": "none", "fetched_at": 0,
                       "partners_count": 0, "users_count": 0}
+    if node_state is None:
+        node_state = {"reachable": None, "last_success": None, "last_probe": None,
+                      "recent_notify_failures": 0, "last_notify_error": None,
+                      "last_notify_success": None}
     # Merge email overrides into geo — override takes precedence over QRZ
     for call, em in email_overrides.items():
         if call in geo and geo[call]:
@@ -1168,6 +1197,93 @@ def build_html(s: Stats, geo: dict, days: int, email_overrides: dict = None,
     _pill_bd = {"green": "rgba(34,197,94,.35)",
                 "amber": "rgba(249,115,22,.35)",
                 "red":   "rgba(239,68,68,.35)"}[_pill_color]
+    # -- Notification-health chip (Fix 4): hidden unless 2+ recent send
+    # failures. Surfaces a broken alert pipeline before an actual outage
+    # would reveal it. Same red palette as a stale lists pill.
+    _notify_health_chip = ""
+    _ns_notify_fails = int(node_state.get("recent_notify_failures", 0) or 0)
+    if _ns_notify_fails >= 2:
+        _last_err = node_state.get("last_notify_error") or "unknown error"
+        _last_ok  = node_state.get("last_notify_success") or "never succeeded"
+        _nh_tip = f"{_last_err} · last successful send: {_last_ok}"
+        _nh_tip = (_nh_tip.replace("&","&amp;").replace('"',"&quot;")
+                          .replace("<","&lt;").replace(">","&gt;"))
+        _notify_health_chip = (
+            f'<span class="lists-pill" title="{_nh_tip}" '
+            f'style="display:inline-flex;align-items:center;gap:6px;padding:3px 10px;'
+            f'border-radius:999px;background:rgba(239,68,68,.12);color:#ef4444;'
+            f'border:1px solid rgba(239,68,68,.35);font-size:.75rem;'
+            f'font-weight:600;font-family:Inter,sans-serif">'
+            f'⚠ Notifications failing</span>'
+        )
+
+    # -- Reachability state for unreachable banner (Fix 2) --
+    _reachable = node_state.get("reachable")
+    _is_unreachable = (_reachable is False)
+    _last_success_iso = node_state.get("last_success")
+    _banner_html = ""
+    _stale_footer = ""
+    _kpi_dim_attrs = ""
+    if _is_unreachable:
+        if _last_success_iso:
+            try:
+                _ls_dt   = datetime.fromisoformat(_last_success_iso)
+                _ls_pretty = _ls_dt.strftime("%I:%M %p").lstrip("0")
+                _elapsed_s = (datetime.now() - _ls_dt).total_seconds()
+                if _elapsed_s < 60:
+                    _elapsed = f"{int(_elapsed_s)} sec"
+                elif _elapsed_s < 3600:
+                    _elapsed = f"{int(_elapsed_s // 60)} min"
+                elif _elapsed_s < 86400:
+                    _hr = int(_elapsed_s // 3600)
+                    _elapsed = f"{_hr} hr" if _hr != 1 else "1 hr"
+                else:
+                    _d = int(_elapsed_s // 86400)
+                    _elapsed = f"{_d} days" if _d != 1 else "1 day"
+                _sub_line = (f"Last successful contact: {_ls_pretty} "
+                             f"({_elapsed} ago).<br>Numbers below are stale.")
+                _footer_text = (f"Data from last successful fetch at {_ls_pretty} "
+                                f"· Reconnecting automatically every 60 sec")
+            except Exception:
+                _sub_line = "Numbers below are stale."
+                _footer_text = "Reconnecting automatically every 60 sec"
+        else:
+            _sub_line = "Node has not responded since dashboard started."
+            _footer_text = "Reconnecting automatically every 60 sec"
+        # Banner extends edge-to-edge by negating the .wrap container padding.
+        # If you change .wrap padding (currently 24px 20px — see CSS), update
+        # the negative margin below to match or the banner will be inset.
+        _banner_html = (
+            '<div role="alert" aria-live="polite" '
+            'style="display:flex;align-items:flex-start;gap:14px;padding:12px 16px;'
+            'background:#FCEBEB;border-bottom:0.5px solid #E24B4A;'
+            # CSS comment lives inside the style attribute so it survives in the
+            # generated HTML where another developer is most likely to find it.
+            'margin:-24px -20px 18px '
+            '/* negative margins match .wrap padding: 24px 20px — keep in sync if wrap padding changes */;">'
+              '<div style="width:22px;height:22px;border-radius:50%;background:#A32D2D;'
+              'color:#fff;font-weight:700;font-family:Inter,sans-serif;display:flex;'
+              'align-items:center;justify-content:center;font-size:14px;line-height:1;'
+              'flex-shrink:0;margin-top:1px">!</div>'
+              '<div style="flex:1">'
+                '<div style="font-size:14px;font-weight:500;color:#501313">'
+                'Node unreachable — BPQ32 is not responding</div>'
+                f'<div style="font-size:12px;font-weight:400;color:#791F1F;margin-top:3px">'
+                f'{_sub_line}</div>'
+              '</div>'
+              '<button onclick="bannerRetry()" '
+              'style="background:#fff;border:0.5px solid #A32D2D;color:#A32D2D;'
+              'border-radius:6px;padding:5px 12px;font-size:11px;font-weight:500;'
+              'font-family:inherit;cursor:pointer;flex-shrink:0">Retry</button>'
+            '</div>'
+        )
+        _stale_footer = (
+            f'<div style="font-size:11px;font-style:italic;color:#94a3b8;'
+            f'text-align:center;margin-top:-12px;margin-bottom:18px">'
+            f'{_footer_text}</div>'
+        )
+        _kpi_dim_attrs = ' style="opacity:0.55;pointer-events:none"'
+
     _lists_pill = (
         f'<span class="lists-pill" title="{_pill_tip}" '
         f'style="display:inline-flex;align-items:center;gap:6px;padding:3px 10px;'
@@ -1305,6 +1421,7 @@ def build_html(s: Stats, geo: dict, days: int, email_overrides: dict = None,
             f'<span class="status-chip {_active_class}" title="{_active_tooltip_attr}">'
             f'<span class="dot dot-{_active_dot}"></span>{_active_label}</span>'
             f'{_lists_pill}'
+            f'{_notify_health_chip}'
           '</div>'
         '</div>'
         f'<div class="ports-expanded" id="ports-expanded">'
@@ -1561,6 +1678,8 @@ body.dark .ft{{border-color:#334155}}
 <body>
 <div class="wrap">
 
+{_banner_html}
+
 <div class="hdr">
   <div class="hdr-left">
     <div class="hdr-icon">📡</div>
@@ -1579,7 +1698,7 @@ body.dark .ft{{border-color:#334155}}
 
 {_action_bar}
 
-<div class="kpi-row">
+<div class="kpi-row"{_kpi_dim_attrs}>
   <div class="kpi kpi-green">
     <div class="kpi-label">Inbound BBS Connects</div>
     <div class="kpi-value" id="kv-inbound">{s.inbound_total}</div>
@@ -1606,6 +1725,8 @@ body.dark .ft{{border-color:#334155}}
     <div class="kpi-sub" id="kv-crashes-sub">{"MiniDump present \u2014 review" if n_crashes else "No crashes detected"}</div>
   </div>
 </div>
+
+{_stale_footer}
 
 <div class="map-wrap">
   <div class="map-tb">
@@ -1982,7 +2103,12 @@ let _dfFrom = '', _dfTo = '', _dfAll = true;
 let _mf = 'all';
 
 function isoLocal(d) {{
-  // Returns YYYY-MM-DD in LOCAL time (not UTC — logs use local Windows time)
+  // Returns YYYY-MM-DD in LOCAL time. NOTE: BPQ32 actually writes its log
+  // timestamps in UTC (verified empirically — see parse_debug() in
+  // bpq_dashboard.py). Date-only fields like Activity-by-Day are stored
+  // post-conversion to local on the Python side, so the JS filter compares
+  // local-day strings here. Time-of-day fields require explicit UTC->local
+  // conversion in Python before reaching the dashboard.
   const y=d.getFullYear(), m=String(d.getMonth()+1).padStart(2,'0'), day=String(d.getDate()).padStart(2,'0');
   return y+'-'+m+'-'+day;
 }}
@@ -2109,6 +2235,19 @@ function toggleTheme(){{
   document.getElementById('tl').textContent=isDark?'Light mode':'Dark mode';
   map.removeLayer(tl);
   tl=L.tileLayer(isDark?TDARK:TLIGHT,TOPTS).addTo(map);
+}}
+
+// ── Unreachable-banner Retry button ──────────────────────────────────────────
+// Posts to /api/rebuild (which force-probes BPQ server-side per Fix 1.5)
+// and reloads on response. State is whatever the fresh probe found.
+async function bannerRetry(){{
+  const btn = event && event.currentTarget;
+  if(btn){{ btn.disabled = true; btn.textContent = 'Retrying...'; }}
+  try{{
+    const r = await fetch('/api/rebuild', {{method:'POST'}});
+    if(r.ok){{ location.reload(); return; }}
+  }}catch(e){{}}
+  if(btn){{ btn.disabled = false; btn.textContent = 'Retry'; }}
 }}
 
 // ── Header split button: fast rebuild vs slow re-fetch ───────────────────────
@@ -2698,6 +2837,38 @@ def fetch_node_users(host: str = "127.0.0.1", port: int = 8010) -> list:
     return users
 
 
+def read_node_state(script_dir: Path) -> dict:
+    """Read the shared node-state JSON file written by dashboard_server.py's
+    liveness probe. Returns a dict with safe defaults if the file is missing
+    or unreadable. The probe runs in the dashboard server process; bpq_dashboard.py
+    only READS this file — it never writes it. See dashboard_server.py for the
+    state-machine and notification logic."""
+    import json as _json
+    defaults = {
+        "reachable":              None,
+        "last_success":           None,
+        "last_probe":             None,
+        "consecutive_failures":   0,
+        "downtime_start":         None,
+        "notified_down":          False,
+        "last_notify_attempt":    None,
+        "last_notify_success":    None,
+        "last_notify_error":      None,
+        "recent_notify_failures": 0,
+    }
+    p = script_dir / "bpq_node_state.json"
+    if not p.exists():
+        return defaults
+    try:
+        with open(p, encoding="utf-8") as f:
+            data = _json.load(f)
+        out = dict(defaults)
+        out.update({k: data.get(k, defaults[k]) for k in defaults})
+        return out
+    except Exception:
+        return defaults
+
+
 # ─── HISTORY DATABASE ────────────────────────────────────────────────────────────
 DB_FILE = "bpq_history.db"
 
@@ -3073,17 +3244,26 @@ def main():
     resolved = via_qrz + via_grid
     print(f"\n  QRZ: {via_qrz}  grid: {via_grid}  unresolved: {len(all_calls)-resolved}")
 
-    # Fetch live node status from BPQ32 web interface
-    print("\nFetching node status...")
-    node_stats = fetch_node_stats()
-    node_ports = fetch_node_ports()
-    node_users = fetch_node_users()
-    if node_stats.get("ok"):
-        print(f"  Version: {node_stats['version']}  Uptime: {node_stats['uptime']}")
-        print(f"  Buffers: {node_stats['buffers_cur']}/{node_stats['buffers_max']}")
-        print(f"  Ports: {len(node_ports)}  Active sessions: {len(node_users)}")
+    # Read shared node-state from the dashboard server's liveness probe.
+    # When reachable=False we skip the (slow) per-page node fetches entirely
+    # so the rebuild stays fast and the UI consistently shows stale-vs-live.
+    node_state = read_node_state(script_dir)
+    if node_state["reachable"] is False:
+        print(f"\nNode marked unreachable (probe at {node_state.get('last_probe')}) — skipping node fetches")
+        node_stats = {"ok": False}
+        node_ports = []
+        node_users = []
     else:
-        print("  Node unreachable (will show offline in dashboard)")
+        print("\nFetching node status...")
+        node_stats = fetch_node_stats()
+        node_ports = fetch_node_ports()
+        node_users = fetch_node_users()
+        if node_stats.get("ok"):
+            print(f"  Version: {node_stats['version']}  Uptime: {node_stats['uptime']}")
+            print(f"  Buffers: {node_stats['buffers_cur']}/{node_stats['buffers_max']}")
+            print(f"  Ports: {len(node_ports)}  Active sessions: {len(node_users)}")
+        else:
+            print("  Node fetch returned no data (probe state may be stale)")
 
     print("\nBuilding HTML...")
     # Load manually entered emails from DB
@@ -3114,7 +3294,8 @@ def main():
     html = build_html(s, geo, args.days, email_overrides,
                       node_stats=node_stats, node_ports=node_ports,
                       node_users=node_users,
-                      lists_meta=lists_meta)
+                      lists_meta=lists_meta,
+                      node_state=node_state)
 
     # Save updated history to DB before writing HTML
     print("\nSaving history database...")

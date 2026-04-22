@@ -1,0 +1,116 @@
+# BPQ-Dashboard configuration template.
+#
+# Copy this file to bpq_dashboard.cfg (no .example) and fill in your values.
+# The real bpq_dashboard.cfg is gitignored — your credentials never leave
+# your machine. This .example file IS committed to the repo as the
+# canonical onboarding template.
+#
+# All sections are OPTIONAL. The dashboard runs without any of them, but
+# you lose the corresponding feature:
+#   [qrz]            -> no callsign location lookup, grid-only
+#   [bpq]            -> token kept here for backward compatibility (see [sysop])
+#   [bbs_users]      -> no extra manually-listed BBS users
+#   [sysop]          -> no live partner/user list fetch from BPQ32 web
+#   [classification] -> defaults are used (HOME_CALL/OP_CALL as self, SWITCH as system)
+#   [notifications]  -> no email/SMS alerts on outage transitions
+
+
+# ---------------------------------------------------------------------------
+# QRZ XML API credentials — for callsign location/email lookup.
+# Sign up at qrz.com (free account is fine for low-volume lookups).
+# Without these, the dashboard falls back to Maidenhead grids only.
+# ---------------------------------------------------------------------------
+[qrz]
+username = REPLACE_ME_QRZ_USER
+password = REPLACE_ME_QRZ_PASS
+
+
+# ---------------------------------------------------------------------------
+# Legacy BPQ32 web token — historically used for AJAX endpoints.
+# The dashboard now uses sysop credentials (see [sysop] below) which is
+# more reliable. This section is kept for backward compatibility but is
+# no longer required. Leave blank or omit entirely.
+# ---------------------------------------------------------------------------
+[bpq]
+token =
+
+
+# ---------------------------------------------------------------------------
+# Manually-listed extra BBS users.
+# Comma-separated callsigns. These get added to s.bbs_callers even if they
+# never appear in the parsed logs (useful for users that exist in your
+# BPQ32 user file but haven't connected during the log retention window).
+# Most people don't need this — bbs_users.txt is the more flexible option.
+# ---------------------------------------------------------------------------
+[bbs_users]
+calls =
+
+
+# ---------------------------------------------------------------------------
+# Sysop credentials for the BPQ32 web interface.
+# Used to fetch the authoritative forwarding-partner list (/Mail/FWD) and
+# the registered BBS user list (/Mail/Users) so the dashboard can correctly
+# classify callers as Partner vs Guest vs External.
+#
+# These come from the USER= lines in the Telnet port block of bpq32.cfg.
+# Look for something like:
+#     USER=WinBPQ,yourpassword,SYSOP,,,,
+# The username is the first field, the password is the second field.
+# ---------------------------------------------------------------------------
+[sysop]
+username = REPLACE_ME_SYSOP_USER
+password = REPLACE_ME_SYSOP_PASS
+
+
+# ---------------------------------------------------------------------------
+# Classification overrides for the 6-bucket caller classifier.
+# Anyone NOT in [sysop]-fetched FwdList or UserList ends up as "external".
+# These two lists let you mark specific callsigns as your own ("self") or
+# as BPQ-internal pseudonyms ("system") so they're filtered out of the BBS
+# user table entirely.
+#
+# Defaults if you omit this section:
+#   self_calls   = HOME_CALL, OP_CALL  (the constants at the top of bpq_dashboard.py)
+#   system_calls = SWITCH
+# ---------------------------------------------------------------------------
+[classification]
+self_calls   = N4SFL, N8FLA
+system_calls = SWITCH
+
+
+# ---------------------------------------------------------------------------
+# Outage notifications — email + SMS via your cell carrier's email gateway.
+#
+# Turn on to receive alerts when BPQ32 goes offline or recovers.
+# Default is off so sharing this dashboard with others does not
+# accidentally route their alerts to someone else's address.
+# ---------------------------------------------------------------------------
+[notifications]
+enabled = false
+
+# SMTP server for sending. Use your own provider — this example
+# uses a typical cPanel-style SSL SMTP setup. Gmail users: create
+# an App Password (not your real password) and use smtp.gmail.com
+# port 465.
+smtp_host = smtp.example.com
+smtp_port = 465
+smtp_user = REPLACE_ME_SMTP_USER
+smtp_pass = REPLACE_ME_SMTP_PASS
+from_addr = REPLACE_ME_FROM_ADDRESS
+
+# Where to send the detailed email.
+email_to = REPLACE_ME_EMAIL
+
+# Where to send a short SMS. Uses your cell carrier's email-to-
+# SMS gateway — look up yours. Common US carriers:
+#   Verizon:  yournumber@vtext.com
+#   AT&T:     yournumber@txt.att.net
+#   T-Mobile: yournumber@tmomail.net
+# Leave blank to disable SMS and send email only.
+sms_to = REPLACE_ME@vtext.com
+
+# Number of consecutive failed probes before declaring an outage
+# and sending the first alert. At 60-second probe interval this
+# means an alert fires after roughly this many minutes of downtime.
+# 3 is a reasonable default — filters out brief BPQ restarts.
+alert_after_failures = 3
