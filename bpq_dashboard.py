@@ -970,9 +970,10 @@ def build_html(s: Stats, geo: dict, days: int, email_overrides: dict = None,
         last_active  = all_dates[-1] if all_dates else (parse_bpq_date(last_con) if last_con else "")
         last_active_h = last_active if last_active else (f"<span style='color:#94a3b8;font-size:.8em'>{last_con}</span>" if last_con else "—")
         email        = (gc.get("email","") if gc else "")
+        call_h = f"<a href='https://www.qrz.com/db/{call}' target='_blank' style='color:inherit;text-decoration:none' title='QRZ page'>{call}</a>" if gc else call
         bbs_table_rows += (
             f"<tr data-call='{call}' data-dates='{','.join(dates_active)}'>"
-            f"<td style='font-weight:600' data-v='{call}'>{call}</td>"
+            f"<td style='font-weight:600' data-v='{call}'>{call_h}</td>"
             f"<td data-v='{role_val}'>{role_tag}</td>"
             f"<td style='color:#8b949e;font-size:.8em' data-v='{loc.lower()}'>{loc}</td>"
             f"<td style='color:#8b949e;font-size:.8em' data-v='{dist_sort}'>{dist_h}</td>"
@@ -1022,9 +1023,10 @@ def build_html(s: Stats, geo: dict, days: int, email_overrides: dict = None,
         msgs_count  = gv.get("msgs", 0)
         data_str    = fmt_bytes(total_bytes)
         gw_email  = gc.get("email","") if gc else ""
+        gw_call_h = f"<a href='https://www.qrz.com/db/{call}' target='_blank' style='color:inherit;text-decoration:none' title='QRZ page'>{call}</a>" if gc else call
         gw_rows += (
             f"<tr data-call='{call}' data-dates='{','.join(dates_active)}'>"
-            f"<td style='font-weight:600' data-v='{call}'>{call}</td>"
+            f"<td style='font-weight:600' data-v='{call}'>{gw_call_h}</td>"
             f"<td style='color:#8b949e;font-size:.8em' data-v='{loc_sort}'>{loc}</td>"
             f"<td style='color:#8b949e;font-size:.8em' data-v='{dist_sort}'>{dist_h}</td>"
             f"<td data-v='{mode_sort}'>{mode_h}</td>"
