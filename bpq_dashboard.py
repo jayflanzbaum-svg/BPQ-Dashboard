@@ -269,8 +269,12 @@ class Stats:
         self.cms_polls     = 0
         self.inbound_total = 0
         self.crashes       = 0
+        self.msg_personal  = 0
+        self.msg_bulletin  = 0
+        self.msg_nts       = 0
         self.daily = defaultdict(lambda: {
             "cms":0,"inbound":0,"msgs":0,
+            "msg_p":0,"msg_b":0,"msg_t":0,
             "unique":set(),      # all callsigns seen that day
             "bbs":set(),         # BBS callers that day
             "gw":set()           # gateway users that day
@@ -610,9 +614,14 @@ def parse_bbs_log(files, s: Stats):
             # B2 forwarding protocol detection on inbound sessions
             if last_incoming and not last_incoming.startswith(HOME_CALL):
                 # FA = file-announce (they're offering a message)
-                if re.search(r"<\S+\s+FA [BPT] ", line):
+                fa_in = re.search(r"<\S+\s+FA ([BPT]) ", line)
+                if fa_in:
                     inbound_b2 = True
                     inbound_msgs_rx += 1
+                    _mt = fa_in.group(1)
+                    if _mt == 'P':   s.msg_personal += 1; s.daily[line_date6]["msg_p"] += 1
+                    elif _mt == 'B': s.msg_bulletin += 1; s.daily[line_date6]["msg_b"] += 1
+                    elif _mt == 'T': s.msg_nts += 1;      s.daily[line_date6]["msg_t"] += 1
                 # FA outbound = we're offering them a message
                 elif re.search(r">\S+\s+FA [BPT] ", line):
                     inbound_b2 = True
@@ -1024,7 +1033,11 @@ def build_html(s: Stats, geo: dict, days: int, email_overrides: dict = None,
             f"<td style='text-align:center' data-v='{msgs_count}'>{msgs_count if msgs_count else '—'}</td>"
             f"<td style='text-align:right;font-size:.8em' data-v='{total_bytes}'>{data_str}</td>"
             f"{email_cell(gw_email, call)}"
-            f"<td style='color:#22c55e'>&#10003;</td></tr>"
+            f"<td style='text-align:center;white-space:nowrap'>"
+            f"<span class='wlc-status' id='wlc-{call}' style='cursor:default'></span>"
+            f"<span class='wlc-edit' onclick=\"openWelcome('{call}')\" title='Compose welcome message' "
+            f"style='cursor:pointer;margin-left:4px;font-size:1.1em'>&#9998;</span>"
+            f"</td></tr>"
         )
 
     # events as JS-filterable objects
@@ -1120,6 +1133,23 @@ def build_html(s: Stats, geo: dict, days: int, email_overrides: dict = None,
         )
     stations_js = "[\n" + ",\n".join(entries) + "\n]"
 
+    # QRZ data for gateway users — used by welcome message modal
+    _gw_qrz = {}
+    for call in s.gateway_users:
+        gc = geo.get(call)
+        if gc:
+            _gw_qrz[call] = {
+                "name": gc.get("name", ""),
+                "city": gc.get("city", ""),
+                "state": gc.get("state", ""),
+                "country": gc.get("country", ""),
+                "grid": gc.get("grid", ""),
+                "location": gc.get("location", ""),
+            }
+        else:
+            _gw_qrz[call] = {}
+    gw_qrz_json = _json.dumps(_gw_qrz)
+
     # Per-day data embedded as JSON so the client-side date filter can recompute KPIs
     daily_json_rows = []
     for d, v in sorted(s.daily.items()):
@@ -1131,6 +1161,7 @@ def build_html(s: Stats, geo: dict, days: int, email_overrides: dict = None,
         daily_json_rows.append(
             f"  {{date:{repr(iso)},label:{repr(fmt_date(d))},"
             f"cms:{v['cms']},inbound:{v['inbound']},msgs:{v['msgs']},"
+            f"msg_p:{v['msg_p']},msg_b:{v['msg_b']},msg_t:{v['msg_t']},"
             f"bbs:{len(v['bbs'])},gw:{len(v['gw'])},unique:{len(v['unique'])}}}"
         )
     daily_json = "[\n" + ",\n".join(daily_json_rows) + "\n]"
@@ -1668,6 +1699,8 @@ body.dark th.sort.asc::after,body.dark th.sort.desc::after{{color:#2dd4bf}}
 
 .ft{{text-align:center;color:#94a3b8;font-size:.72rem;padding:14px 0 4px;border-top:1px solid #e2e8f0;margin-top:8px}}
 body.dark .ft{{border-color:#334155}}
+body.dark #wlc-modal>div,body.dark #em-modal>div{{background:#1e293b;color:#e2e8f0}}
+body.dark #wlc-text,body.dark #em-input{{background:#0f172a;border-color:#334155;color:#e2e8f0}}
 
 /* ── responsive ── */
 @media(max-width:1200px){{.kpi-row{{grid-template-columns:repeat(3,1fr)}}}}
@@ -1700,9 +1733,22 @@ body.dark .ft{{border-color:#334155}}
 
 <div class="kpi-row"{_kpi_dim_attrs}>
   <div class="kpi kpi-green">
-    <div class="kpi-label">Inbound BBS Connects</div>
-    <div class="kpi-value" id="kv-inbound">{s.inbound_total}</div>
-    <div class="kpi-sub">Total connection events to BBS ports</div>
+    <div class="kpi-label">New Messages Received</div>
+    <div style="display:flex;justify-content:center;gap:18px;margin:4px 0 2px">
+      <div style="text-align:center">
+        <div style="font-size:.75rem;font-weight:700;color:#8b949e;letter-spacing:.05em">P</div>
+        <div class="kpi-value" id="kv-msg-p" style="font-size:2rem">{s.msg_personal}</div>
+      </div>
+      <div style="text-align:center">
+        <div style="font-size:.75rem;font-weight:700;color:#8b949e;letter-spacing:.05em">B</div>
+        <div class="kpi-value" id="kv-msg-b" style="font-size:2rem">{s.msg_bulletin}</div>
+      </div>
+      <div style="text-align:center">
+        <div style="font-size:.75rem;font-weight:700;color:#8b949e;letter-spacing:.05em">T</div>
+        <div class="kpi-value" id="kv-msg-t" style="font-size:2rem">{s.msg_nts}</div>
+      </div>
+    </div>
+    <div class="kpi-sub">Personal · Bulletins · NTS Traffic</div>
   </div>
   <div class="kpi kpi-blue">
     <div class="kpi-label">Guest BBS Users</div>
@@ -1826,7 +1872,7 @@ body.dark .ft{{border-color:#334155}}
       <th class="sort" data-col="6" onclick="sortGw(this)">Messages</th>
       <th class="sort" data-col="7" onclick="sortGw(this)">Data</th>
       <th>Email</th>
-      <th>Status</th>
+      <th>Welcome</th>
     </tr>
     <tbody id="gw-tbody">{gw_rows}</tbody>
   </table>
@@ -1850,6 +1896,21 @@ body.dark .ft{{border-color:#334155}}
     <div style="display:flex;gap:10px;justify-content:flex-end">
       <button onclick="closeEmailModal()" style="padding:8px 18px;border:1px solid #e2e8f0;border-radius:8px;background:#fff;cursor:pointer;font-size:.9rem">Cancel</button>
       <button onclick="saveEmail()" style="padding:8px 22px;border:none;border-radius:8px;background:#3b82f6;color:#fff;cursor:pointer;font-size:.9rem;font-weight:600">Save</button>
+    </div>
+  </div>
+</div>
+
+<!-- Welcome message modal -->
+<div id="wlc-modal" style="display:none;position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,.5);z-index:9999;align-items:center;justify-content:center">
+  <div style="background:#fff;border-radius:14px;padding:28px 32px;min-width:440px;max-width:600px;box-shadow:0 20px 60px rgba(0,0,0,.3)">
+    <div style="font-weight:700;font-size:1rem;margin-bottom:4px">Welcome message — <span id="wlc-call" style="color:#8b5cf6;font-family:'JetBrains Mono',monospace"></span></div>
+    <div style="font-size:.8rem;color:#64748b;margin-bottom:12px">Edit and copy to send via Winlink</div>
+    <textarea id="wlc-text" rows="20" style="width:100%;padding:12px 14px;border:1.5px solid #e2e8f0;border-radius:8px;font-size:.85rem;font-family:'JetBrains Mono',monospace;outline:none;box-sizing:border-box;margin-bottom:10px;resize:vertical;line-height:1.5" onfocus="this.style.borderColor='#8b5cf6'" onblur="this.style.borderColor='#e2e8f0'"></textarea>
+    <div id="wlc-status" style="font-size:.8rem;min-height:1.2em;margin-bottom:14px;color:#22c55e"></div>
+    <div style="display:flex;gap:10px;justify-content:flex-end">
+      <button onclick="closeWelcome()" style="padding:8px 18px;border:1px solid #e2e8f0;border-radius:8px;background:#fff;cursor:pointer;font-size:.9rem">Cancel</button>
+      <button onclick="copyWelcome()" style="padding:8px 22px;border:none;border-radius:8px;background:#6366f1;color:#fff;cursor:pointer;font-size:.9rem;font-weight:600">Copy to clipboard</button>
+      <button onclick="markWelcomed()" style="padding:8px 22px;border:none;border-radius:8px;background:#22c55e;color:#fff;cursor:pointer;font-size:.9rem;font-weight:600">Mark as sent</button>
     </div>
   </div>
 </div>
@@ -1889,6 +1950,7 @@ stations.forEach(st=>{{
 const DAILY      = {daily_json};
 const EVENTS     = {events_json};
 const PEER_DAILY = {peer_daily_json};
+const GW_QRZ     = {gw_qrz_json};
 
 // ── Peer bar renderer ─────────────────────────────────────────────────────────
 function renderPeers(from, to, showAll) {{
@@ -2008,10 +2070,12 @@ function sortBbs(th){{
 // ── Single source of truth for all KPI updates ────────────────────────────────
 function syncAllKpis(from, to, showAll) {{
 
-  // ── Inbound connects (from DAILY data) ──
-  let inbound=0;
-  DAILY.forEach(row=>{{ if(showAll||(row.date>=from&&row.date<=to)) inbound+=row.inbound; }});
-  document.getElementById('kv-inbound').textContent=inbound;
+  // ── New messages received by type (from DAILY data) ──
+  let mp=0,mb=0,mt=0;
+  DAILY.forEach(row=>{{ if(showAll||(row.date>=from&&row.date<=to)){{ mp+=row.msg_p; mb+=row.msg_b; mt+=row.msg_t; }} }});
+  document.getElementById('kv-msg-p').textContent=mp;
+  document.getElementById('kv-msg-b').textContent=mb;
+  document.getElementById('kv-msg-t').textContent=mt;
 
   // ── BBS guests and partners (count from BBS detail table — authoritative) ──
   let guests=0, partners=0;
@@ -2385,9 +2449,92 @@ async function saveEmail() {{
 }}
 
 document.addEventListener('keydown', e => {{
-  if(e.key === 'Escape') closeEmailModal();
+  if(e.key === 'Escape') {{ closeEmailModal(); closeWelcome(); }}
   if(e.key === 'Enter' && document.getElementById('em-modal').style.display === 'flex') saveEmail();
 }});
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ── Welcome message modal ────────────────────────────────────────────────────
+let _wlcCall = '';
+
+function buildWelcomeMsg(call) {{
+  const q = GW_QRZ[call] || {{}};
+  const name = q.name || '';
+  const loc  = q.location || '';
+  let personal = '';
+  if (name && loc) {{
+    personal = 'I see you\\'re ' + name + ' out of ' + loc + ' — great to have a fellow ham in the area connecting through the gateway. Whether you\\'re into HF, VHF, or just exploring what packet and Winlink can do, I think you\\'ll find some useful tools here.';
+  }} else if (loc) {{
+    personal = 'I see you\\'re based in ' + loc + ' — great to have you connecting through the gateway. Whether you\\'re into HF, VHF, or just exploring what packet and Winlink can do, I think you\\'ll find some useful tools here.';
+  }} else if (name) {{
+    personal = 'Great to have you connecting through the gateway, ' + name + '. Whether you\\'re into HF, VHF, or just exploring what packet and Winlink can do, I think you\\'ll find some useful tools here.';
+  }} else {{
+    personal = 'Great to have you on the system. Whether you\\'re into HF, VHF, or just exploring what packet and Winlink can do, I think you\\'ll find some useful tools here.';
+  }}
+  return 'Hi ' + call + ',\\n\\n' +
+    'Thanks for connecting through the N4SFL gateway — glad to have you on the system. ' + personal + '\\n\\n' +
+    'I wanted to let you know there\\'s also a local BBS available (N4SFL-1) that you can access over RF. It offers a few tools designed to work well over radio and low-speed links:\\n\\n' +
+    '  \\u2022 Daily GRIB-based weather summaries\\n' +
+    '  \\u2022 48-hour text forecasts (no graphics required)\\n' +
+    '  \\u2022 LIVE HF spot summaries (15-minute snapshots)\\n' +
+    '  \\u2022 Simple AI query tool for quick info\\n\\n' +
+    'These can be useful for general ops, and especially in situations where internet access is limited.\\n\\n' +
+    'Quick access to the BBS:\\n' +
+    '  \\u2022 VHF Packet: 145.030 MHz (1200 baud)\\n' +
+    '  \\u2022 HF VARA (recommended): 7.1032 USB (BW500) or 14.1065 USB\\n\\n' +
+    'Once connected:\\n' +
+    'Type: BBS\\n' +
+    'Then: HELP\\n\\n' +
+    'No need to reply — just wanted to make sure you knew it was available.\\n\\n' +
+    '73,\\nJason N4SFL';
+}}
+
+function initWelcomeStatus() {{
+  document.querySelectorAll('.wlc-status').forEach(el => {{
+    const call = el.id.replace('wlc-','');
+    const sent = localStorage.getItem('wlc-sent-' + call);
+    el.innerHTML = sent ? '<span style="color:#22c55e" title="Welcomed">&#10003;</span>'
+                        : '<span style="color:#ef4444" title="Not yet welcomed">&#10007;</span>';
+  }});
+}}
+
+function openWelcome(call) {{
+  _wlcCall = call;
+  document.getElementById('wlc-call').textContent = call;
+  document.getElementById('wlc-text').value = buildWelcomeMsg(call);
+  document.getElementById('wlc-status').textContent = '';
+  document.getElementById('wlc-modal').style.display = 'flex';
+}}
+
+function closeWelcome() {{
+  document.getElementById('wlc-modal').style.display = 'none';
+  _wlcCall = '';
+}}
+
+function copyWelcome() {{
+  const ta = document.getElementById('wlc-text');
+  navigator.clipboard.writeText(ta.value).then(() => {{
+    document.getElementById('wlc-status').textContent = '\\u2713 Copied to clipboard';
+    document.getElementById('wlc-status').style.color = '#22c55e';
+  }}).catch(() => {{
+    ta.select();
+    document.execCommand('copy');
+    document.getElementById('wlc-status').textContent = '\\u2713 Copied';
+    document.getElementById('wlc-status').style.color = '#22c55e';
+  }});
+}}
+
+function markWelcomed() {{
+  if (!_wlcCall) return;
+  localStorage.setItem('wlc-sent-' + _wlcCall, new Date().toISOString());
+  const el = document.getElementById('wlc-' + _wlcCall);
+  if (el) el.innerHTML = '<span style="color:#22c55e" title="Welcomed">&#10003;</span>';
+  document.getElementById('wlc-status').textContent = '\\u2713 Marked as sent';
+  document.getElementById('wlc-status').style.color = '#22c55e';
+  setTimeout(closeWelcome, 1200);
+}}
+
+initWelcomeStatus();
 // ─────────────────────────────────────────────────────────────────────────────
 
 // Apply newest-first sort on Activity by Day, then apply Today filter
