@@ -1036,10 +1036,15 @@ def build_html(s: Stats, geo: dict, days: int, email_overrides: dict = None,
             f"<td style='text-align:right;font-size:.8em' data-v='{total_bytes}'>{data_str}</td>"
             f"{email_cell(gw_email, call)}"
             f"<td style='text-align:center;white-space:nowrap'>"
-            f"<span class='wlc-status' id='wlc-{call}' style='cursor:default'></span>"
-            f"<span class='wlc-edit' onclick=\"openWelcome('{call}')\" title='Compose welcome message' "
-            f"style='cursor:pointer;margin-left:4px;font-size:1.1em'>&#9998;</span>"
-            f"</td></tr>"
+            f"<span class='wlc-status' id='wlc-{call}'></span>"
+            f"<button onclick=\"openWelcome('{call}')\" title='Compose welcome message' "
+            f"style='background:none;border:none;cursor:pointer;color:#64748b;padding:2px;margin-left:4px;"
+            f"vertical-align:middle;opacity:.6' onmouseover=\"this.style.opacity=1\" onmouseout=\"this.style.opacity=.6\">"
+            f"<svg xmlns='http://www.w3.org/2000/svg' width='13' height='13' viewBox='0 0 24 24' "
+            f"fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'>"
+            f"<path d='M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7'/>"
+            f"<path d='M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z'/></svg>"
+            f"</button></td></tr>"
         )
 
     # events as JS-filterable objects
@@ -1911,6 +1916,7 @@ body.dark #wlc-text,body.dark #em-input{{background:#0f172a;border-color:#334155
     <div id="wlc-status" style="font-size:.8rem;min-height:1.2em;margin-bottom:14px;color:#22c55e"></div>
     <div style="display:flex;gap:10px;justify-content:flex-end">
       <button onclick="closeWelcome()" style="padding:8px 18px;border:1px solid #e2e8f0;border-radius:8px;background:#fff;cursor:pointer;font-size:.9rem">Cancel</button>
+      <button onclick="sendViaWinlink()" style="padding:8px 22px;border:none;border-radius:8px;background:#8b5cf6;color:#fff;cursor:pointer;font-size:.9rem;font-weight:600">Send via Winlink</button>
       <button onclick="copyWelcome()" style="padding:8px 22px;border:none;border-radius:8px;background:#6366f1;color:#fff;cursor:pointer;font-size:.9rem;font-weight:600">Copy to clipboard</button>
       <button onclick="markWelcomed()" style="padding:8px 22px;border:none;border-radius:8px;background:#22c55e;color:#fff;cursor:pointer;font-size:.9rem;font-weight:600">Mark as sent</button>
     </div>
@@ -2491,12 +2497,15 @@ function buildWelcomeMsg(call) {{
     '73,\\nJason N4SFL';
 }}
 
+const _svgCheck = `<svg xmlns='http://www.w3.org/2000/svg' width='15' height='15' viewBox='0 0 24 24' fill='none' stroke='#22c55e' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'><polyline points='20 6 9 17 4 12'/></svg>`;
+const _svgX = `<svg xmlns='http://www.w3.org/2000/svg' width='15' height='15' viewBox='0 0 24 24' fill='none' stroke='#ef4444' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'><line x1='18' y1='6' x2='6' y2='18'/><line x1='6' y1='6' x2='18' y2='18'/></svg>`;
+
 function initWelcomeStatus() {{
   document.querySelectorAll('.wlc-status').forEach(el => {{
     const call = el.id.replace('wlc-','');
     const sent = localStorage.getItem('wlc-sent-' + call);
-    el.innerHTML = sent ? '<span style="color:#22c55e" title="Welcomed">&#10003;</span>'
-                        : '<span style="color:#ef4444" title="Not yet welcomed">&#10007;</span>';
+    el.innerHTML = sent ? `<span style="vertical-align:middle;cursor:default" title="Welcomed">${{_svgCheck}}</span>`
+                        : `<span style="vertical-align:middle;cursor:default" title="Not yet welcomed">${{_svgX}}</span>`;
   }});
 }}
 
@@ -2526,11 +2535,23 @@ function copyWelcome() {{
   }});
 }}
 
+function sendViaWinlink() {{
+  if (!_wlcCall) return;
+  const body = document.getElementById('wlc-text').value;
+  const subj = 'Welcome to N4SFL gateway';
+  const mailto = 'mailto:' + _wlcCall + '@winlink.org'
+    + '?subject=' + encodeURIComponent(subj)
+    + '&body=' + encodeURIComponent(body);
+  window.open(mailto, '_blank');
+  document.getElementById('wlc-status').textContent = '\\u2713 Opening Winlink\u2026';
+  document.getElementById('wlc-status').style.color = '#8b5cf6';
+}}
+
 function markWelcomed() {{
   if (!_wlcCall) return;
   localStorage.setItem('wlc-sent-' + _wlcCall, new Date().toISOString());
   const el = document.getElementById('wlc-' + _wlcCall);
-  if (el) el.innerHTML = '<span style="color:#22c55e" title="Welcomed">&#10003;</span>';
+  if (el) el.innerHTML = `<span style="vertical-align:middle;cursor:default" title="Welcomed">${{_svgCheck}}</span>`;
   document.getElementById('wlc-status').textContent = '\\u2713 Marked as sent';
   document.getElementById('wlc-status').style.color = '#22c55e';
   setTimeout(closeWelcome, 1200);
