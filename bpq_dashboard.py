@@ -336,6 +336,18 @@ def fmt_time_12h(t: str) -> str:
         return t
 
 
+def _bpq_utc_to_local_date6(file_date6: str, hms: str) -> str:
+    """Combine BPQ32 log YYMMDD + HH:MM:SS, treat as UTC, return local YYMMDD.
+    Used by all log parsers to bucket daily aggregates under the correct local
+    day. BPQ32 log timestamps are UTC (verified — see parse_debug). Falls back
+    to the input file date on any parse failure so callers stay safe."""
+    try:
+        naive_utc = datetime.strptime("20" + file_date6 + " " + hms, "%Y%m%d %H:%M:%S")
+        return naive_utc.replace(tzinfo=timezone.utc).astimezone().strftime("%y%m%d")
+    except (ValueError, TypeError):
+        return file_date6
+
+
 def parse_debug(files, s: Stats):
     # Line format in DEBUG log: YYMMDD HH:MM:SS ! Program Starting
     #
@@ -398,8 +410,12 @@ def parse_cms_access(files, s: Stats):
         m = re.search(r"(\d{8})", os.path.basename(fp))
         file_date = m.group(1)[2:] if m else "?"
         all_dates.append(file_date)
-        current_call   = None
-        session_active = False
+        current_call    = None
+        session_active  = False
+        # Per-session local date set on connect; used for all subsequent buckets.
+        # Lines in this file have UTC HH:MM:SS — combined with the UTC file date
+        # they convert to the local-day for s.daily aggregation.
+        session_date    = file_date
 
         for line in read_file(fp):
             line = line.rstrip()
@@ -408,9 +424,11 @@ def parse_cms_access(files, s: Stats):
             if cm:
                 current_call   = cm.group(2)
                 session_active = True
+                # Derive local date from connect-line UTC timestamp + filename date.
+                session_date   = _bpq_utc_to_local_date6(file_date, cm.group(1))
                 if current_call.startswith("N4SFL"):
                     s.cms_polls += 1
-                    s.daily[file_date]["cms"] += 1
+                    s.daily[session_date]["cms"] += 1
                 else:
                     base = strip_ssid(current_call)
                     if base not in s.gateway_users:
@@ -419,11 +437,11 @@ def parse_cms_access(files, s: Stats):
                             "grid":"","client":"","dates":[],"modes":set(),"msgs":0
                         }
                     s.gateway_users[base]["sessions"] += 1
-                    if file_date not in s.gateway_users[base]["dates"]:
-                        s.gateway_users[base]["dates"].append(file_date)
-                    s.record_active(base, file_date)
-                    s.daily[file_date]["gw"].add(base)
-                    s.daily[file_date]["unique"].add(base)
+                    if session_date not in s.gateway_users[base]["dates"]:
+                        s.gateway_users[base]["dates"].append(session_date)
+                    s.record_active(base, session_date)
+                    s.daily[session_date]["gw"].add(base)
+                    s.daily[session_date]["unique"].add(base)
                 continue
 
             if not session_active:
@@ -453,7 +471,7 @@ def parse_cms_access(files, s: Stats):
                     s.gateway_users[base]["client"] = clm.group(0).strip("[]")
 
             if fc_re.match(line):
-                s.daily[file_date]["msgs"] += 1
+                s.daily[session_date]["msgs"] += 1
                 if current_call and not current_call.startswith("N4SFL"):
                     base = strip_ssid(current_call)
                     if base in s.gateway_users:
@@ -489,6 +507,10 @@ def parse_connect_log(files, s: Stats):
                 call = strip_ssid(cm.group(2))
                 dest = cm.group(3)
                 mode = cm.group(4).strip()   # e.g. "VARA HF", "VARA FM", "AX.25"
+                # Convert UTC timestamp -> local date so a connect made shortly
+                # before midnight UTC (= late evening local) lands in the
+                # correct local-day bucket.
+                local_date = _bpq_utc_to_local_date6(file_date, cm.group(1))
                 # Skip own auto-connects
                 if call in ("N4SFL",):
                     continue
@@ -499,17 +521,17 @@ def parse_connect_log(files, s: Stats):
                     if base in s.gateway_users:
                         # Track all modes this station has used
                         s.gateway_users[base].setdefault("modes", set()).add(mode)
-                    s.record_active(call, file_date)
+                    s.record_active(call, local_date)
                     continue
                 s.inbound_total += 1
-                s.daily[file_date]["inbound"] += 1
-                s.daily[file_date]["unique"].add(call)
-                s.daily[file_date]["bbs"].add(call)
+                s.daily[local_date]["inbound"] += 1
+                s.daily[local_date]["unique"].add(call)
+                s.daily[local_date]["bbs"].add(call)
                 if call not in s.bbs_callers:
                     s.bbs_callers[call] = {"connects":0,"modes":set(),"grid":""}
                 s.bbs_callers[call]["connects"] += 1
                 s.bbs_callers[call]["modes"].add(mode)
-                s.record_active(call, file_date)
+                s.record_active(call, local_date)
 
 
 def parse_bbs_log(files, s: Stats):
@@ -538,22 +560,11 @@ def parse_bbs_log(files, s: Stats):
 
         for line in read_file(fp):
             # Extract date+time from start of line (format: YYMMDD HH:MM:SS ...).
-            # BPQ32 writes BBS log timestamps in UTC (same hardwired behavior as
-            # DEBUG logs — verified against MiniDump filename vs mtime offsets).
-            # We convert UTC -> local before bucketing so a message that arrives
-            # after 8 PM EDT (which is past midnight UTC the next day) lands in
-            # the correct local-day bucket. Without this, the daily P/B/T KPI
-            # showed yesterday's late-evening messages on today's UTC date.
+            # BPQ32 writes BBS log timestamps in UTC; convert to local before
+            # bucketing so late-evening messages don't slide into tomorrow.
             dt_match = re.match(r"^(\d{6})\s+(\d{2}:\d{2}:\d{2})", line)
             if dt_match:
-                try:
-                    naive_utc = datetime.strptime(
-                        "20" + dt_match.group(1) + " " + dt_match.group(2),
-                        "%Y%m%d %H:%M:%S")
-                    local = naive_utc.replace(tzinfo=timezone.utc).astimezone()
-                    line_date6 = local.strftime("%y%m%d")
-                except ValueError:
-                    pass  # keep previous line_date6 on parse failure
+                line_date6 = _bpq_utc_to_local_date6(dt_match.group(1), dt_match.group(2))
             try:
                 line_iso = datetime.strptime("20" + line_date6, "%Y%m%d").strftime("%Y-%m-%d") if line_date6 else ""
             except ValueError:
