@@ -537,10 +537,23 @@ def parse_bbs_log(files, s: Stats):
         line_date6      = None    # YYMMDD from current line
 
         for line in read_file(fp):
-            # Extract date from start of line (format: YYMMDD HH:MM:SS ...)
-            dm = re.match(r"^(\d{6})\s", line)
-            if dm:
-                line_date6 = dm.group(1)
+            # Extract date+time from start of line (format: YYMMDD HH:MM:SS ...).
+            # BPQ32 writes BBS log timestamps in UTC (same hardwired behavior as
+            # DEBUG logs — verified against MiniDump filename vs mtime offsets).
+            # We convert UTC -> local before bucketing so a message that arrives
+            # after 8 PM EDT (which is past midnight UTC the next day) lands in
+            # the correct local-day bucket. Without this, the daily P/B/T KPI
+            # showed yesterday's late-evening messages on today's UTC date.
+            dt_match = re.match(r"^(\d{6})\s+(\d{2}:\d{2}:\d{2})", line)
+            if dt_match:
+                try:
+                    naive_utc = datetime.strptime(
+                        "20" + dt_match.group(1) + " " + dt_match.group(2),
+                        "%Y%m%d %H:%M:%S")
+                    local = naive_utc.replace(tzinfo=timezone.utc).astimezone()
+                    line_date6 = local.strftime("%y%m%d")
+                except ValueError:
+                    pass  # keep previous line_date6 on parse failure
             try:
                 line_iso = datetime.strptime("20" + line_date6, "%Y%m%d").strftime("%Y-%m-%d") if line_date6 else ""
             except ValueError:
