@@ -611,9 +611,17 @@ def parse_bbs_log(files, s: Stats):
                 inbound_msgs_rx = 0
                 inbound_msgs_tx = 0
 
-            # B2 forwarding protocol detection on inbound sessions
+            # B2 forwarding protocol detection on inbound sessions.
+            # Two protocol variants we count for message-type breakdown:
+            #   FA [BPT] ...     - FBB B2, used by BBS-to-BBS partners (WB4MOZ etc.)
+            #                      Type letter is the second field directly.
+            #   FC <enc> <MID>   - WL2K B2, used by RMS / Winlink CMS gateway.
+            #                      Type comes from first character of the MID
+            #                      (P-prefix = Personal, B = Bulletin, T = NTS).
+            # Both are mutually exclusive per session, so we process each line
+            # against both regexes — at most one will match.
             if last_incoming and not last_incoming.startswith(HOME_CALL):
-                # FA = file-announce (they're offering a message)
+                # FBB B2 inbound file-announce
                 fa_in = re.search(r"<\S+\s+FA ([BPT]) ", line)
                 if fa_in:
                     inbound_b2 = True
@@ -622,12 +630,23 @@ def parse_bbs_log(files, s: Stats):
                     if _mt == 'P':   s.msg_personal += 1; s.daily[line_date6]["msg_p"] += 1
                     elif _mt == 'B': s.msg_bulletin += 1; s.daily[line_date6]["msg_b"] += 1
                     elif _mt == 'T': s.msg_nts += 1;      s.daily[line_date6]["msg_t"] += 1
+                # WL2K B2 inbound file-proposal — RMS / CMS sessions
+                #   Example line: "<RMS       FC EM PW5XY289UP75 4482 2019 0"
+                #   Group 1 captures the first letter of the MID (3rd field).
+                fc_in = re.search(r"<\S+\s+FC \S+\s+([BPT])\S*\s", line)
+                if fc_in:
+                    inbound_b2 = True
+                    inbound_msgs_rx += 1
+                    _mt = fc_in.group(1)
+                    if _mt == 'P':   s.msg_personal += 1; s.daily[line_date6]["msg_p"] += 1
+                    elif _mt == 'B': s.msg_bulletin += 1; s.daily[line_date6]["msg_b"] += 1
+                    elif _mt == 'T': s.msg_nts += 1;      s.daily[line_date6]["msg_t"] += 1
                 # FA outbound = we're offering them a message
-                elif re.search(r">\S+\s+FA [BPT] ", line):
+                if re.search(r">\S+\s+FA [BPT] ", line):
                     inbound_b2 = True
                     inbound_msgs_tx += 1
                 # B2 handshake or FQ = session was definitely forwarding
-                elif re.search(r"[<>]\S+\s+\[BPQ-", line) or re.search(r"[<>]\S+\s+\[WL2K-", line):
+                if re.search(r"[<>]\S+\s+\[BPQ-", line) or re.search(r"[<>]\S+\s+\[WL2K-", line):
                     inbound_b2 = True
 
             # Inbound disconnect — save B2 status
@@ -3066,6 +3085,11 @@ def db_open(script_dir: Path):
             PRIMARY KEY(peer,iso));
         CREATE TABLE IF NOT EXISTS crashes(
             iso TEXT, dt TEXT, startup INTEGER DEFAULT 0, PRIMARY KEY(iso,dt));
+        CREATE TABLE IF NOT EXISTS daily_msgs(
+            iso TEXT PRIMARY KEY,
+            msg_p INTEGER DEFAULT 0,
+            msg_b INTEGER DEFAULT 0,
+            msg_t INTEGER DEFAULT 0);
     """)
     # Migrate existing DB: add columns if they didn't exist yet
     for col, defval in [("first_seen", "''"), ("last_seen", "''")]:
@@ -3142,6 +3166,23 @@ def db_load(conn, s: Stats):
             s.crash_dates.append({"iso":row["iso"],"dt":row["dt"],"startup":bool(row["startup"])})
             seen.add(key)
 
+    # Daily message counts — survives BPQ32 log rotation. We use MAX so a
+    # re-parse of current logs (which produces fresh numbers for recent days)
+    # never loses data for older days whose log files are gone.
+    for row in c.execute("SELECT iso, msg_p, msg_b, msg_t FROM daily_msgs"):
+        iso = row["iso"]
+        if not iso or len(iso) != 10: continue
+        # Convert ISO YYYY-MM-DD to YYMMDD (s.daily key format)
+        yymmdd = iso[2:4] + iso[5:7] + iso[8:10]
+        s.daily[yymmdd]["msg_p"] = max(s.daily[yymmdd]["msg_p"], row["msg_p"] or 0)
+        s.daily[yymmdd]["msg_b"] = max(s.daily[yymmdd]["msg_b"], row["msg_b"] or 0)
+        s.daily[yymmdd]["msg_t"] = max(s.daily[yymmdd]["msg_t"], row["msg_t"] or 0)
+    # Resync the all-time totals from the merged daily buckets so the KPI
+    # initial render (before JS date filter runs) matches the sum of dailies.
+    s.msg_personal = sum(d["msg_p"] for d in s.daily.values())
+    s.msg_bulletin = sum(d["msg_b"] for d in s.daily.values())
+    s.msg_nts      = sum(d["msg_t"] for d in s.daily.values())
+
     n = c.execute("SELECT COUNT(*) FROM station_dates").fetchone()[0]
     print(f"  History DB: {n} station-date records loaded")
 
@@ -3205,6 +3246,23 @@ def db_save(conn, s: Stats):
     for cd in s.crash_dates:
         c.execute("INSERT OR IGNORE INTO crashes(iso,dt,startup) VALUES(?,?,?)",
                   (cd["iso"], cd["dt"], 1 if cd.get("startup") else 0))
+
+    # Daily P/B/T message counts. Skip days with all zeros so we don't
+    # populate the DB with empty rows. MAX on conflict means a re-parse
+    # never reduces a previously-recorded count even if the source log
+    # file has since been rotated away.
+    for d, v in s.daily.items():
+        if v["msg_p"] == 0 and v["msg_b"] == 0 and v["msg_t"] == 0:
+            continue
+        if not (isinstance(d, str) and len(d) == 6 and d.isdigit()):
+            continue
+        iso = "20" + d[:2] + "-" + d[2:4] + "-" + d[4:6]
+        c.execute("""INSERT INTO daily_msgs(iso, msg_p, msg_b, msg_t) VALUES(?,?,?,?)
+                     ON CONFLICT(iso) DO UPDATE SET
+                       msg_p=MAX(msg_p, excluded.msg_p),
+                       msg_b=MAX(msg_b, excluded.msg_b),
+                       msg_t=MAX(msg_t, excluded.msg_t)""",
+                  (iso, v["msg_p"], v["msg_b"], v["msg_t"]))
 
     conn.commit()
     n = c.execute("SELECT COUNT(*) FROM station_dates").fetchone()[0]
