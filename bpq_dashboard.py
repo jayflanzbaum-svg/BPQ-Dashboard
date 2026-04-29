@@ -2581,13 +2581,37 @@ function copyWelcome() {{
 function sendViaWinlink() {{
   if (!_wlcCall) return;
   const body = document.getElementById('wlc-text').value;
-  const subj = 'Welcome to N4SFL gateway';
+  // //WL2K R/ prefix is the Winlink "Routine" precedence indicator and also
+  // bypasses ACCEPTLIST filters on the recipient side \u2014 see winlink.org/HELP
+  const subj = '//WL2K R/Welcome to N4SFL gateway';
   const mailto = 'mailto:' + _wlcCall + '@winlink.org'
     + '?subject=' + encodeURIComponent(subj)
     + '&body=' + encodeURIComponent(body);
-  window.open(mailto, '_blank');
-  document.getElementById('wlc-status').textContent = '\\u2713 Opening Winlink\u2026';
-  document.getElementById('wlc-status').style.color = '#8b5cf6';
+
+  // Programmatic anchor click is more reliable than window.open() for
+  // protocol handlers \u2014 modern browsers may try to open the URL as a tab
+  // when called via window.open(), which causes the external app launch
+  // to fail silently. The hidden-anchor approach preserves the user-gesture
+  // context so Windows hands the URL to the registered mailto handler
+  // (Winlink Express, in this setup).
+  const a = document.createElement('a');
+  a.href = mailto;
+  a.style.display = 'none';
+  // Don't set target='_blank' \u2014 that's what makes window.open fail; we want
+  // the OS to handle the protocol, not the browser to open a new tab first.
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+
+  // Pre-load the body into the clipboard as a fallback so if mailto fails
+  // to launch Winlink Express (no handler registered, browser blocked it,
+  // wrong default app, etc.) the user can still paste manually.
+  navigator.clipboard.writeText(body).catch(()=>{{}});
+
+  const stat = document.getElementById('wlc-status');
+  stat.innerHTML = '\\u2713 Opening Winlink\u2026 <span style="color:#94a3b8;font-weight:400">'
+                 + '(body also copied to clipboard as fallback)</span>';
+  stat.style.color = '#8b5cf6';
 }}
 
 function markWelcomed() {{
